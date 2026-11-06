@@ -2,7 +2,7 @@
 // track assist on), 'flail' (random stick jerks + boosts), 'reverse' (turns round at
 // the start). Each must finish a lap on every course with assist on.
 // Run: node tools/assist-sim.mjs
-import { COURSES } from '../js/flight/courseDefs.js';
+import { COURSES, courseDefById, dailyCourseId } from '../js/flight/courseDefs.js';
 import { Course } from '../js/flight/course.js';
 import { SpaceWorld } from '../js/flight/world.js';
 import { ShipSim } from '../js/flight/ship.js';
@@ -11,7 +11,7 @@ import { mulberry32 } from '../js/core/util.js';
 
 const DT = 1 / 120;
 let bad = 0;
-for (const def of COURSES) {
+for (const def of [...COURSES, courseDefById(dailyCourseId())]) {
   const course = new Course(def);
   const world = new SpaceWorld(course);
   for (const pilot of ['handsoff', 'flail', 'reverse']) {

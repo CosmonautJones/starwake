@@ -871,6 +871,10 @@ export function tunnelBounds(course) {
   return (pos, radius = 0, id = 0) => {
     const h = id & 8191;
     course.locate(pos, hints[h], out);
+    // A stale hint can settle on another stretch of tube passing close by (crossovers):
+    // anything that far off the line is re-found from scratch.
+    const far = course.tunnelRadiusAt(out.u) * 1.6 + radius;
+    if (out.c.distanceToSquared(pos) > far * far) course.locate(pos, Math.round(course.nearestU(pos).u * course.sampleCount), out);
     hints[h] = out.i;
     d.subVectors(pos, out.c);
     d.addScaledVector(out.t, -d.dot(out.t));

@@ -1,40 +1,66 @@
 // Validates wormhole course geometry: every bend wider than the tube, no two stretches
-// of tube overlapping, gates inside the tube, and the start straight clear.
-// Run: node tools/check-courses.mjs
-import { COURSES } from '../js/flight/courseDefs.js';
+// of tube overlapping (except declared crossings), ships always located on their own
+// stretch, gates and pads inside the tube, and the start straight clear. Also checks
+// today's daily course and a spread of sample dates.
+// Run: node tools/check-courses.mjs [dates]   (dates: how many sample daily dates, default 60)
+import { COURSES, courseDefById } from '../js/flight/courseDefs.js';
+import { dailyCourseId, dailyCourseDef } from '../js/flight/daily.js';
 import { Course } from '../js/flight/course.js';
+import { SpaceWorld } from '../js/flight/world.js';
+import { BoostPads } from '../js/flight/pads.js';
+import { checkCourse } from '../js/flight/courseCheck.js';
 
+const DATES = Number(process.argv[2] ?? 60);
 let problems = 0;
-for (const def of COURSES) {
+
+function run(def, verbose = true) {
   const c = new Course(def);
-  const n = c.sampleCount;
-  // Turn radius vs tube radius at each sample (~30 units apart).
-  let minR = Infinity, at = 0, worst = Infinity, worstAt = 0;
-  const k = 5;
-  for (let i = 0; i < n; i++) {
-    const a = c.samples[(i - k + n) % n], b = c.samples[i], d = c.samples[(i + k) % n];
-    const ab = a.distanceTo(b), bd = b.distanceTo(d), ad = a.distanceTo(d);
-    const s = (ab + bd + ad) / 2;
-    const area = Math.sqrt(Math.max(0, s * (s - ab) * (s - bd) * (s - ad)));
-    const R = area > 1e-6 ? (ab * bd * ad) / (4 * area) : Infinity;
-    if (R < minR) { minR = R; at = i / n; }
-    const ratio = R / c.tunnelRadiusAt(i / n);
-    if (ratio < worst) { worst = ratio; worstAt = i / n; }
+  const world = new SpaceWorld(c);
+  const pads = new BoostPads(c, world);
+  const r = checkCourse(c, { world, pads });
+  const s = r.stats;
+  if (verbose || !r.ok) {
+    console.log(`${def.name}${def.daily ? ` [${def.id}, ${def.difficulty}${def.attempt ? `, seed ${def.attempt}` : ''}]` : ''}: length ${s.length}, tube ${def.tunnel.radius} (${(def.tunnel.pinches || []).length} pinches${c.splits.length ? `, ${c.splits.length} splits` : ''}), ${s.gates} gates, ${s.pads} pads, tightest bend ${s.tightest} at u=${s.tightestAt} (${s.worst}x tube at u=${s.worstAt}), start ${s.start}x, closest wall-to-wall gap ${s.minGap} at u=${s.gapAt}${s.crossGap != null ? `, declared crossing ${s.crossGap} m at u=${s.crossAt}` : ''}, locate err ${s.locateErr} m`);
   }
-  // Closest approach of two far-apart stretches, minus both tube radii.
-  let minGap = Infinity, pair = null;
-  for (let i = 0; i < n; i += 3) for (let j = i + 3; j < n; j += 3) {
-    let ds = Math.abs(i - j) * (c.length / n); ds = Math.min(ds, c.length - ds);
-    if (ds < 400) continue;
-    const gap = c.samples[i].distanceTo(c.samples[j]) - c.tunnelRadiusAt(i / n) - c.tunnelRadiusAt(j / n);
-    if (gap < minGap) { minGap = gap; pair = [(i / n).toFixed(2), (j / n).toFixed(2)]; }
-  }
-  let outside = 0;
-  for (const g of c.rings) if (c.nearestU(g.pos).dist + g.radius > c.tunnelRadiusAt(g.u) - 2) outside++;
-  console.log(`${def.name}: length ${c.length.toFixed(0)}, tube ${def.tunnel.radius} (${(def.tunnel.pinches || []).length} pinches), ${c.rings.length} gates, tightest bend ${minR.toFixed(0)} at u=${at.toFixed(2)} (${worst.toFixed(1)}x tube at u=${worstAt.toFixed(2)}), closest wall-to-wall gap ${minGap.toFixed(0)} at u=${pair}`);
-  if (worst < 1.6) { console.log('  !! bend too tight for the tube'); problems++; }
-  if (minGap < 25) { console.log('  !! two stretches of tube too close'); problems++; }
-  if (outside) { console.log(`  !! ${outside} gate(s) poke out of the tube`); problems++; }
+  for (const p of r.problems) console.log(`  !! ${p}`);
+  problems += r.problems.length;
+  return r;
 }
+
+for (const def of COURSES) run(def);
+
+// Daily courses: today's, then a spread of dates (one line each unless something fails).
+const today = dailyCourseId();
+run(courseDefById(today));
+const start = Date.UTC(2026, 0, 1);
+const tally = {}, attempts = [];
+let maxLen = 0, minLen = Infinity, failed = 0;
+for (let k = 0; k < DATES; k++) {
+  const id = dailyCourseId(new Date(start + k * 6 * 86400e3 + (k % 5) * 3600e3));
+  const def = courseDefById(id);
+  const before = problems;
+  if (def.id !== id) { console.log(`  !! ${id} did not round-trip (got ${def.id})`); problems++; }
+  // Deterministic: a fresh generation (bypassing the cache) gives the same course.
+  const fresh = dailyCourseDef(id, { cache: false });
+  if (JSON.stringify(fresh) !== JSON.stringify(def)) { console.log(`  !! ${id} is not deterministic`); problems++; }
+  const r = run(def, false);
+  if (problems > before) failed++;
+  tally[def.difficulty] = (tally[def.difficulty] || 0) + 1;
+  attempts.push(def.attempt || 0);
+  maxLen = Math.max(maxLen, r.stats.length); minLen = Math.min(minLen, r.stats.length);
+}
+if (DATES) console.log(`Daily run: ${DATES} sample dates, ${failed} failed, lengths ${minLen}-${maxLen}, ${Object.entries(tally).map(([k, v]) => `${k} ${v}`).join(', ')}, re-seeds max ${Math.max(...attempts)} avg ${(attempts.reduce((a, b) => a + b, 0) / attempts.length).toFixed(1)}`);
+
+// The rules must still catch accidents: Helix Braid without its declared crossing, or with
+// a clearance it doesn't meet, has to fail.
+const braid = COURSES.find((c) => c.id === 'braid');
+if (braid) {
+  const undeclared = checkCourse(new Course({ ...braid, crossings: undefined }), { quick: true });
+  const tooTight = checkCourse(new Course({ ...braid, crossings: braid.crossings.map((x) => ({ ...x, clearance: 30 })) }), { quick: true });
+  const ok = !undeclared.ok && !tooTight.ok;
+  console.log(`Self-test: undeclared close pass ${undeclared.ok ? 'NOT caught' : 'caught'}, crossing below its clearance ${tooTight.ok ? 'NOT caught' : 'caught'}`);
+  if (!ok) problems++;
+}
+
 console.log(problems ? `${problems} problem(s)` : 'All courses OK');
 process.exit(problems ? 1 : 0);

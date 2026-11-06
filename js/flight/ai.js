@@ -6,9 +6,9 @@ import * as THREE from 'three';
 import { clamp, mulberry32 } from '../core/util.js';
 
 export const AI_SKILL = {
-  easy: { gain: 2.2, throttle: 0.82, fire: 0.25, spread: 0.08, missile: 0.15, react: 0.5, boost: 0.15, gates: 0.35, corner: 0.8 },
-  normal: { gain: 2.8, throttle: 0.93, fire: 0.45, spread: 0.05, missile: 0.45, react: 0.3, boost: 0.55, gates: 0.7, corner: 1 },
-  hard: { gain: 3.4, throttle: 1, fire: 0.85, spread: 0.018, missile: 0.8, react: 0.15, boost: 1, gates: 0.95, corner: 1.2 },
+  easy: { gain: 2.2, throttle: 0.82, fire: 0.25, spread: 0.08, missile: 0.15, react: 0.5, boost: 0.15, gates: 0.35, corner: 0.8, risk: 0.1 },
+  normal: { gain: 2.8, throttle: 0.93, fire: 0.45, spread: 0.05, missile: 0.45, react: 0.3, boost: 0.55, gates: 0.7, corner: 1, risk: 0.35 },
+  hard: { gain: 3.4, throttle: 1, fire: 0.85, spread: 0.018, missile: 0.8, react: 0.15, boost: 1, gates: 0.95, corner: 1.2, risk: 0.6 },
 };
 
 const _inv = new THREE.Quaternion(), _l = new THREE.Vector3(), _t = new THREE.Vector3(), _a = new THREE.Vector3();
@@ -79,6 +79,14 @@ export class FlightAI {
       }
     }
 
+    // Split lanes: commit to a channel well before the divider's nose (weaker pilots
+    // mostly take the wide safe one), then hold its centre until past the tail.
+    const split = course.splits.length ? this._splitLane(course, sim, uT, L, cfg) : null;
+    if (split) {
+      const ax = split.sp.axis === 'up' ? fr.U : fr.R, cross = split.sp.axis === 'up' ? fr.R : fr.U;
+      _t.copy(fr.pos).addScaledVector(ax, split.lane).addScaledVector(cross, split.cross);
+    }
+
     // --- Obstacle check along our velocity.
     this.thinkT -= dt;
     if (this.thinkT <= 0) {
@@ -105,6 +113,13 @@ export class FlightAI {
       }
     }
     if (this.avoidT > 0) _t.add(this.avoid).addScaledVector(this.avoid, 1.5);
+    if (split) {
+      // Dodging inside a channel must never steer us into the divider (or out of the channel).
+      const ax = split.sp.axis === 'up' ? fr.U : fr.R;
+      const lat = _a.subVectors(_t, fr.pos).dot(ax);
+      const lo = split.lane - split.half, hi = split.lane + split.half;
+      if (lat < lo || lat > hi) _t.addScaledVector(ax, clamp(lat, lo, hi) - lat);
+    }
     // Never aim into the wall.
     _a.subVectors(_t, fr.pos);
     _a.addScaledVector(fr.T, -_a.dot(fr.T));
@@ -179,5 +194,36 @@ export class FlightAI {
       inp.aimDir.copy(fwd);
     }
     return inp;
+  }
+
+  /** The channel to fly while a split is near (ahead or alongside), or null. */
+  _splitLane(course, sim, uT, L, cfg) {
+    // From ~350 m before the nose (time to cross the tube) until the look-ahead passes the tail.
+    const sp = course.splitAt(sim.trackU + 175 / L, 175 / L);
+    if (!sp) return null;
+    const ahead = (((uT - sp.u1) % 1) + 1.5) % 1 - 0.5;
+    if (ahead * L > 20) return null;
+    const key = sp.index + 1000 * Math.floor(sim.dist / L + 0.5);
+    if (this.splitFor !== key) {
+      this.splitFor = key;
+      this.splitRisk = this.rng() < cfg.risk;
+      this.splitCross = (this.rng() - 0.5) * 0.5;
+    }
+    // Alongside the divider there's no changing channel: fly the one we're in. Close to the
+    // nose and still lined up with it, take whichever side is nearer.
+    const at = ((((sim.trackU - sp.u0) % 1) + 1.5) % 1 - 0.5) * L;
+    if (at > -140) {
+      const f = course.frameAt(sim.trackU);
+      const lat = _u.subVectors(sim.pos, f.pos).dot(sp.axis === 'up' ? f.U : f.R) * sp.side;
+      if (at > -8 || Math.abs(lat - sp.offset) < sp.thick + sim.p.radius + 10) this.splitRisk = lat > sp.offset;
+    }
+    const margin = sim.p.radius + 9;
+    if (this.splitRisk) {
+      const half = Math.max(2, sp.riskHalf - margin);
+      return { sp, lane: sp.riskLane, half, cross: 0 };
+    }
+    // Safe channel: between the far wall and the divider; stay off both.
+    const half = Math.max(4, (sp.width + sp.offset - sp.thick) / 2 - margin - 6) * 0.6;
+    return { sp, lane: sp.safeLane, half, cross: this.splitCross * sp.width * 0.5 };
   }
 }

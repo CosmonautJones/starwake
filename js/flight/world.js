@@ -24,6 +24,7 @@ export const PROP_STATS = {
   station: { r: 90, hp: null, kind: 'metal' },
   beacon: { r: 3, hp: null, kind: 'metal' },
   monolith: { r: 8, hp: null, kind: 'rock' },
+  divider: { r: 1, hp: null, kind: 'rock' },
 };
 
 // Rough collider sets for big props when the visual builder isn't available (headless).
@@ -65,10 +66,20 @@ export class SpaceWorld {
     const rng = mulberry32(hashString(def.id) + 77);
     const course = this.course;
     const stations = def.features.filter((f) => f.type === 'station').map((f) => course.pointAt(f.at));
-    const clearOfRings = (pos, r) => {
+    const L = course.length;
+    const reserved = []; // spots kept clear (the big pad in each split's risky channel)
+    const clearOfRings = (pos, r, u = null) => {
       for (const ring of course.rings) if (pos.distanceTo(ring.pos) < ring.radius + r + 6) return false;
       for (const s of stations) if (pos.distanceTo(s) < 135 + r) return false;
-      for (const it of this.items) if (pos.distanceTo(it.pos) < it.radius + r + 3) return false;
+      for (const it of this.items) if (it.type !== 'divider' && pos.distanceTo(it.pos) < it.radius + r + 3) return false;
+      for (const p of reserved) if (pos.distanceTo(p) < 16 + r) return false;
+      if (u != null && course.splits.length && this._inDivider(pos, u, r + 6)) return false;
+      // Never let an object poke into another stretch of tube passing close by.
+      if (u != null && def.crossings) {
+        const g = course.nearestU(pos);
+        const along = Math.abs((((g.u - u) % 1) + 1.5) % 1 - 0.5) * L;
+        if (along > 300 && g.dist < course.tunnelRadiusAt(g.u) + r + 6) return false;
+      }
       return true;
     };
     const around = (u, dist, angle) => {
@@ -77,6 +88,7 @@ export class SpaceWorld {
     };
     const randQuat = () => new THREE.Quaternion().setFromEuler(new THREE.Euler(rng() * 6.28, rng() * 6.28, rng() * 6.28));
     const place = this._placeFn(rng);
+    if (course.splits.length) this._layoutSplits(rng, place, clearOfRings, reserved);
 
     for (const f of def.features) {
       if (f.type === 'field' || f.type === 'scatter' || f.type === 'mines' || f.type === 'boulders') {
@@ -110,19 +122,21 @@ export class SpaceWorld {
           if ((f.type === 'mines' || f.type === 'boulders' && dist < R) && nearStart) continue;
           const pos = around(u, dist, rng() * Math.PI * 2);
           const r = (PROP_STATS[type].r || 1) * size;
-          if (!clearOfRings(pos, r)) continue;
+          if (!clearOfRings(pos, r, u)) continue;
           let drop = null;
           if (type === 'asteroid' || type === 'ice') drop = rng() < 0.22 ? 'boost' : rng() < 0.12 ? 'missile' : null;
           else if (type === 'crystal') drop = 'boost';
           else if (type === 'satellite') drop = rng() < 0.5 ? 'missile' : 'boost';
           else if (type === 'cargo') drop = rng() < 0.55 ? 'missile' : 'shield';
-          place(type, pos, randQuat(), size, { drop });
+          place(type, pos, randQuat(), size, { drop, u });
           i++;
         }
       } else if (f.type === 'station') {
         const fr = course.frameAt(f.at);
-        const q = new THREE.Quaternion().setFromRotationMatrix(_m.makeBasis(fr.R, fr.U, fr.T));
-        place('station', fr.pos, q, 1);
+        // Right-handed basis (R, U, -T), so the ring faces down the tube and the tube threads
+        // its bore. (R, U, T) is a mirror, which made a skewed, non-unit quaternion.
+        const q = new THREE.Quaternion().setFromRotationMatrix(_m.makeBasis(fr.R, fr.U, fr.T.clone().negate()));
+        place('station', fr.pos, q, 1, { u: f.at });
       } else if (f.type === 'wreck' || f.type === 'landmark') {
         const fr = course.frameAt(f.at);
         const pos = fr.pos.addScaledVector(fr.R, (f.side || 1) * (f.offset || 160)).addScaledVector(fr.U, (rng() - 0.5) * 60);
@@ -130,14 +144,14 @@ export class SpaceWorld {
         const q = type === 'monolith'
           ? new THREE.Quaternion().setFromRotationMatrix(_m.makeBasis(fr.R, fr.U, fr.T)).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0.2, rng() * 6, 0.15)))
           : randQuat();
-        place(type, pos, q, f.scale || 1);
+        place(type, pos, q, f.scale || 1, { u: f.at });
       } else if (f.type === 'beacons') {
         for (let u = f.from; u <= f.to + 1e-6; u += f.every || 0.02) {
           const fr = course.frameAt(u);
           for (const side of [-1, 1]) {
             const pos = fr.pos.clone().addScaledVector(fr.R, side * (course.tunnelRadiusAt(u) + 16)).addScaledVector(fr.U, -12);
             const q = new THREE.Quaternion().setFromRotationMatrix(_m.makeBasis(fr.R, fr.U, fr.T));
-            place('beacon', pos, q, 1);
+            place('beacon', pos, q, 1, { u });
           }
         }
       }
@@ -147,6 +161,7 @@ export class SpaceWorld {
   /** Colliders in world space for every placed item. */
   _colliders() {
     for (const it of this.items) {
+      if (it.type === 'divider') { this._dividerColliders(it); this.byId.set(it.id, it); continue; }
       const local = this.colliderFor?.(it.type === 'boulder' || it.type === 'boulderIce' ? null : it.type, it.seed) || fallbackColliders(it.type);
       if (local && local.length) {
         _m.compose(it.pos, it.quat, _v.set(it.scale, it.scale, it.scale));
@@ -158,6 +173,76 @@ export class SpaceWorld {
         it.colliders.push({ x: it.pos.x, y: it.pos.y, z: it.pos.z, r: it.radius * 0.92, ref: it.maxHp != null ? it : null, item: it, dead: false });
       }
       this.byId.set(it.id, it);
+    }
+  }
+
+  // ------------------------------------------------------------------ split lanes
+  /** Split-lane geometry at u: frame, the split's axis and the cross axis. */
+  _splitFrame(sp, u) {
+    const f = this.course.frameAt(u);
+    return { f, ax: sp.axis === 'up' ? f.U : f.R, cross: sp.axis === 'up' ? f.R : f.U };
+  }
+
+  /** Is pos (at lap fraction u) within `pad` of a split divider? */
+  _inDivider(pos, u, pad) {
+    const sp = this.course.splitAt(u, (pad + 10) / this.course.length);
+    if (!sp) return false;
+    const { f, ax } = this._splitFrame(sp, u);
+    const lat = _v.subVectors(pos, f.pos).dot(ax) * sp.side;
+    return Math.abs(lat - sp.offset) < sp.thick + pad;
+  }
+
+  /**
+   * Each split: a solid divider (rock spine) off the line, and hazards in the tight risky
+   * channel beyond it (mines and asteroids), keeping the spot for its big boost pad clear.
+   */
+  _layoutSplits(rng, place, clear, reserved) {
+    const course = this.course, L = course.length;
+    for (const sp of course.splits) {
+      const { f, ax } = this._splitFrame(sp, sp.at);
+      const centre = f.pos.clone().addScaledVector(ax, sp.side * sp.offset);
+      place('divider', centre, new THREE.Quaternion(), 1, { u: sp.at, split: sp });
+      reserved.push(f.pos.clone().addScaledVector(ax, sp.riskLane));
+    }
+    for (const sp of course.splits) {
+      const span = sp.u1 - sp.u0;
+      for (let i = 0, tries = 0; i < sp.hazards && tries < sp.hazards * 30; tries++) {
+        const u = sp.u0 + (0.08 + rng() * 0.84) * span;
+        const { f, ax, cross } = this._splitFrame(sp, u);
+        const mine = i % 2 === 0;
+        const size = mine ? 1 : 3 + rng() * 4;
+        const r = mine ? PROP_STATS.mine.r : size;
+        const lat = sp.riskLane + (rng() * 2 - 1) * Math.max(0, sp.riskHalf - r - 6);
+        // the channel is a lens: less room across it near the tube wall
+        const reach = Math.sqrt(Math.max(0, (sp.width - r - 8) ** 2 - lat * lat));
+        const pos = f.pos.clone().addScaledVector(ax, lat).addScaledVector(cross, (rng() * 2 - 1) * reach * 0.7);
+        if (!clear(pos, r, u)) continue;
+        if (mine) place('mine', pos, new THREE.Quaternion(), 1, { u });
+        else place('asteroid', pos, new THREE.Quaternion().setFromEuler(new THREE.Euler(rng() * 6.28, rng() * 6.28, rng() * 6.28)), size, { drop: rng() < 0.4 ? 'boost' : null, u });
+        i++;
+      }
+    }
+  }
+
+  /** A divider is a wall of overlapping spheres spanning the tube across its split axis. */
+  _dividerColliders(it) {
+    const sp = it.split, course = this.course, L = course.length;
+    const len = (sp.u1 - sp.u0) * L;
+    const cols = Math.max(2, Math.round(len / 10));
+    const r = sp.thick + 1;
+    const reach = Math.sqrt(Math.max(0, sp.width * sp.width - sp.offset * sp.offset)) + 2;
+    const rows = Math.ceil((reach * 2) / 10);
+    for (let k = 0; k <= cols; k++) {
+      const u = sp.u0 + (k / cols) * (sp.u1 - sp.u0);
+      const { f, ax, cross } = this._splitFrame(sp, u);
+      // the nose and tail taper to a blade, so a glancing hit deflects you into a channel
+      const e = Math.min(k, cols - k) / 3;
+      const rr = e >= 1 ? r : r * (0.55 + 0.45 * e);
+      for (let j = 0; j <= rows; j++) {
+        const y = -reach + (j / rows) * reach * 2;
+        const w = f.pos.clone().addScaledVector(ax, sp.side * sp.offset).addScaledVector(cross, y);
+        it.colliders.push({ x: w.x, y: w.y, z: w.z, r: rr, ref: null, item: it, dead: false });
+      }
     }
   }
 
@@ -222,6 +307,8 @@ export class SpaceWorld {
         maxHp: st.hp == null ? null : Math.round(st.hp * (st.perScale ? Math.max(1, scale * 0.6) : 1)),
         explosive: !!st.explosive, drop: extra.drop ?? null, alive: true, breaks: 0, respawnT: 0, colliders: [],
       };
+      if (extra.u != null) item.u = ((extra.u % 1) + 1) % 1;
+      if (extra.split) item.split = extra.split;
       item.hp = item.maxHp;
       this.items.push(item);
       return item;

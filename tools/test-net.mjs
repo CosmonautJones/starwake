@@ -9,6 +9,7 @@
 import { NetSession, PROTOCOL_VERSION } from '../js/net/session.js';
 import { WsTransport, defaultRelayUrl } from '../js/net/transport.js';
 import { start as startServer } from '../server/server.mjs';
+import { courseDefById, dailyCourseId } from '../js/flight/courseDefs.js';
 
 let failures = 0;
 let passes = 0;
@@ -87,6 +88,20 @@ async function coreFlow(tag, opts) {
       const ok = client.updateSettings({ laps: 9 });
       await err;
       return ok === false && host.lobby.laps === 5;
+    });
+
+    await step(`${tag}: new course ids and a daily run id reach the client and build the same course`, async () => {
+      for (const id of ['braid', 'forks', dailyCourseId(), 'daily-2027-02-28']) {
+        const got = waitFor(client, 'lobby', (l) => l.trackId === id);
+        host.updateSettings({ trackId: id });
+        await got;
+        const a = courseDefById(host.lobby.trackId), b = courseDefById(client.lobby.trackId);
+        if (b.id !== id || JSON.stringify(a.points) !== JSON.stringify(b.points)) return false;
+      }
+      const back = waitFor(client, 'lobby', (l) => l.trackId === 'rings');
+      host.updateSettings({ trackId: 'rings' });
+      await back;
+      return true;
     });
 
     await step(`${tag}: battle settings (mode, kill target, time) reach the client, junk is refused`, async () => {

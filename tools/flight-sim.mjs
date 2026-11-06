@@ -1,7 +1,9 @@
 // Headless wormhole race: AI pilots in every preset craft on every course, with
 // weapons live. Reports lap times, gates taken, wall scrapes, kills and resets.
-// Run: node tools/flight-sim.mjs [easy|normal|hard] [laps]
-import { COURSES } from '../js/flight/courseDefs.js';
+// Also: nobody's place on the line may jump (crossovers), and on split lanes the AI must
+// keep off the dividers. Includes today's daily run.
+// Run: node tools/flight-sim.mjs [easy|normal|hard] [laps] [course id|daily]
+import { COURSES, courseDefById, dailyCourseId } from '../js/flight/courseDefs.js';
 import { Course } from '../js/flight/course.js';
 import { SpaceWorld } from '../js/flight/world.js';
 import { ShipSim } from '../js/flight/ship.js';
@@ -15,15 +17,15 @@ const LAPS = Number(process.argv[3] || 2);
 const DT = 1 / 120, LIMIT = 300;
 const only = process.argv[4];
 let bad = 0;
-for (const def of COURSES) {
-  if (only && def.id !== only) continue;
+for (const def of [...COURSES, courseDefById(dailyCourseId())]) {
+  if (only && def.id !== only && !(only === 'daily' && def.daily)) continue;
   const course = new Course(def);
   const world = new SpaceWorld(course);
   const weapons = new WeaponSystem(world);
   const ships = PRESETS.map((d, i) => {
     const stats = computeStats(d);
     const sim = new ShipSim(course, stats.physics, course.gridSlot(i), d.id);
-    const ship = { id: d.id, name: d.name, sim, connected: true, stats: { gates: 0, scrapes: 0, bumps: 0, deaths: 0, kills: 0, resets: 0, shots: 0, hits: 0, broke: 0 } };
+    const ship = { id: d.id, name: d.name, sim, connected: true, stats: { gates: 0, scrapes: 0, bumps: 0, deaths: 0, kills: 0, resets: 0, shots: 0, hits: 0, broke: 0, jumps: 0, divider: 0, risky: 0, safe: 0 } };
     ship.ai = new FlightAI(ship, world, { skill, seed: i + 3 });
     return ship;
   });
@@ -35,7 +37,23 @@ for (const def of COURSES) {
     for (const s of ships) {
       const inp = s.ai.think(DT, ships, lead);
       weapons.updateLock(s, s.sim.forward.clone(), ships, DT);
+      const d0 = s.sim.dist, u0 = s.sim.trackU;
       s.sim.step(DT, inp, { world, racing: true, raceTime: t });
+      // Progress along the line can only change as fast as the ship flies (respawns aside).
+      const moved = Math.abs(s.sim.dist - d0), respawned = s.sim.events.some((e) => e.type === 'respawn' || e.type === 'autoReset');
+      if (!respawned && moved > s.sim.vel.length() * DT * 3 + 15) s.stats.jumps++;
+      if (course.splits.length && !s.sim.dead) {
+        let touch = false;
+        world.forEachNear(s.sim.pos, s.sim.p.radius + 0.5, (c) => { if (c.item?.type === 'divider') touch = true; });
+        if (touch && !s.touching) s.stats.divider++;
+        s.touching = touch;
+        for (const sp of course.splits) {
+          if (!(u0 < sp.at && s.sim.trackU >= sp.at && s.sim.trackU - u0 < 0.01)) continue;
+          const f = course.frameAt(sp.at);
+          const lat = s.sim.pos.clone().sub(f.pos).dot(sp.axis === 'up' ? f.U : f.R) * sp.side;
+          if (lat > sp.offset) s.stats.risky++; else s.stats.safe++;
+        }
+      }
       if (inp.fire && weapons.tryFireLaser(s, inp.aimDir, color, true)) s.stats.shots++;
       if (inp.missile) weapons.tryFireMissile(s, s.sim.lock.id, true);
       for (const e of s.sim.events) {
@@ -81,8 +99,9 @@ for (const def of COURSES) {
   for (const s of ships) {
     const st = s.stats;
     const laps = s.sim.lapTimes.map((v) => v.toFixed(1)).join(' / ');
-    console.log(`  ${s.name.padEnd(6)} ${s.sim.finished ? 'done ' + s.finishTime.toFixed(1) + 's' : 'DNF at ' + s.sim.progress().toFixed(2)}  laps ${laps}  gates ${st.gates} scrapes ${st.scrapes} bumps ${st.bumps} deaths ${st.deaths} kills ${st.kills} resets ${st.resets} shots ${st.shots} hits ${st.hits} broke ${st.broke}`);
-    if (!s.sim.finished) bad++;
+    const extra = (course.splits.length ? `  splits risky ${st.risky}/safe ${st.safe} divider hits ${st.divider}` : '') + (st.jumps ? `  LINE JUMPS ${st.jumps}` : '');
+    console.log(`  ${s.name.padEnd(6)} ${s.sim.finished ? 'done ' + s.finishTime.toFixed(1) + 's' : 'DNF at ' + s.sim.progress().toFixed(2)}  laps ${laps}  gates ${st.gates} scrapes ${st.scrapes} bumps ${st.bumps} deaths ${st.deaths} kills ${st.kills} resets ${st.resets} shots ${st.shots} hits ${st.hits} broke ${st.broke}${extra}`);
+    if (!s.sim.finished || st.jumps) bad++;
   }
 }
 console.log(bad ? `\n${bad} DNF` : '\nAll AI finished');

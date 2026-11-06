@@ -287,7 +287,10 @@ export class ShipSim {
   /** Wormhole: wall contact, progress along the line, laps, gates, wrong way. */
   _tunnel(dt, raceTime, racing) {
     const course = this.course, L = course.length;
-    const loc = course.locate(this.pos, this.trackI, _loc);
+    // Walk at most as far as we could have flown this step (plus slack), so a stretch of
+    // tube passing close by (crossovers) can never capture us.
+    const walk = Math.ceil((this.vel.length() * dt * 2 + 30) / (course.step || 6));
+    const loc = course.locate(this.pos, this.trackI, _loc, walk);
     this.trackI = loc.i;
     let du = loc.u - this.trackU;
     du -= Math.round(du);
