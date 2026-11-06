@@ -9,6 +9,7 @@ import { ARENAS, getArenaDef } from '../flight/arenaDefs.js';
 import { BODIES, randomDesign, normalizeDesign } from '../craft/parts.js';
 import { mulberry32 } from '../core/util.js';
 import { HangarScreen } from './hangar.js';
+import { rankPill, courseMedal, targetsPanel, resultsPanel } from './careerView.js';
 
 const html = (s) => {
   const t = document.createElement('template');
@@ -180,6 +181,7 @@ export class Screens {
           </nav>
         </div>
         <footer class="title-foot">
+          ${rankPill()}
           <span class="chip" style="--c:${d.colors.glow}">${escapeHtml(d.name)}</span>
           <span>flown by ${escapeHtml(app.settings.playerName)}</span>
           ${storage.persistent ? '' : '<span class="warn">Saving is unavailable in this browser mode — designs last until you close the tab.</span>'}
@@ -213,6 +215,7 @@ export class Screens {
         <span class="track-diff" data-d="${t.difficulty}">${t.difficulty}</span>
         <span class="track-blurb">${escapeHtml(t.blurb)}</span>
         <span class="track-best">${foot}</span>
+        ${battle ? '' : courseMedal(t.id)}
       </button>`;
     }).join('');
     const seg = (key, values, cur, label = (v) => String(v)) => `<div class="seg" data-k="${key}">${values.map((v) => `<button data-v="${v}" class="${cur === v ? 'is-on' : ''}">${label(v)}</button>`).join('')}</div>`;
@@ -225,7 +228,7 @@ export class Screens {
             <div class="field"><span>Kills to win</span>${seg('battleTarget', [5, 10, 15, 25], s.battleTarget)}</div>
             <div class="field"><span>Time limit</span>${seg('battleTime', [180, 300, 480, 600], s.battleTime, (v) => `${v / 60} min`)}</div>
             <div class="field"><span>Hazards</span>${seg('hazards', [0, 0.3, 0.6, 1], [0, 0.3, 0.6, 1].includes(s.hazards) ? s.hazards : 0.6, (v) => ({ 0: 'Off', 0.3: 'Light', 0.6: 'Normal', 1: 'Heavy' })[v])}</div>` : `
-            <div class="field"><span>Opponents</span>${seg('aiCount', [0, 1, 3, 5, 7], s.aiCount, (n) => (n === 0 ? 'Solo' : String(n)))}</div>
+            <div class="field"><span>Opponents</span>${seg('aiCount', [0, 1, 3, 5, 7], s.aiCount, (n) => (n === 0 ? 'Time trial' : String(n)))}</div>
             <div class="field"><span>Skill</span>${seg('difficulty', ['easy', 'normal', 'hard'], s.difficulty, cap)}</div>
             <div class="field"><span>Laps</span>${seg('laps', [1, 2, 3, 5], s.laps)}</div>
             <div class="field"><span>Hazards</span>${seg('hazards', [0, 0.3, 0.6, 1], [0, 0.3, 0.6, 1].includes(s.hazards) ? s.hazards : 0.6, (v) => ({ 0: 'Off', 0.3: 'Light', 0.6: 'Normal', 1: 'Heavy' })[v])}</div>
@@ -240,6 +243,7 @@ export class Screens {
               <select data-k="design">${designs.map((d) => `<option value="${d.id}" ${d.id === sel ? 'selected' : ''}>${escapeHtml(d.name)} — ${BODIES[d.body].label}</option>`).join('')}</select>
             </label>
             ${opts}
+            ${battle ? '' : '<div class="medal-targets" data-k="medals"></div>'}
             <p class="note" data-k="note"></p>
             <button class="primary big" data-act="start">${battle ? 'Start battle' : 'Start race'}</button>
           </div>
@@ -255,7 +259,8 @@ export class Screens {
       }
       const assist = (s.trackAssist ?? 0.7) <= 0 ? 'Track assist is off.' : 'Centre the mouse and the ship follows the tunnel by itself.';
       const hz = s.hazards > 0 ? ' Watch for drifting plasmoids and Vesk ambushes.' : '';
-      note.textContent = (s.aiCount === 0 ? 'Practice run: just you, the clock and your best lap. ' : `${s.aiCount} AI pilot${s.aiCount > 1 ? 's' : ''} on ${s.difficulty} skill. `) + assist + ' Fly through the amber gates for extra boost.' + hz;
+      $('[data-k=medals]', el).innerHTML = targetsPanel(getTrackDef(s.trackId), s.laps);
+      note.textContent = (s.aiCount === 0 ? 'Time trial: just you and the clock. Beat the medal times. ' : `${s.aiCount} AI pilot${s.aiCount > 1 ? 's' : ''} on ${s.difficulty} skill. `) + assist + ' Fly through the amber gates for extra boost.' + hz;
     };
     updateNote();
     el.addEventListener('click', (e) => {
@@ -263,6 +268,7 @@ export class Screens {
       if (t) {
         app.saveSettings({ [battle ? 'arenaId' : 'trackId']: t.dataset.track });
         $$('[data-track]', el).forEach((b) => { b.classList.toggle('is-on', b === t); b.setAttribute('aria-pressed', b === t); });
+        updateNote();
       }
       const segBtn = e.target.closest('.seg button');
       if (segBtn) {
@@ -409,7 +415,7 @@ export class Screens {
     return { el, onBack: () => app.pause(false) };
   }
 
-  results({ results, rank, records, mode, trackName, game, teams }) {
+  results({ results, rank, records, mode, trackName, game, teams, career }) {
     const app = this.app;
     const me = app.race?.player?.id;
     const battle = game === 'battle';
@@ -442,6 +448,7 @@ export class Screens {
           <h2 class="${(teams ? headline === 'Your crew won' : rank === 1) ? 'win' : ''}">${headline}</h2>
           ${teamLine ? `<p class="team-line">${teamLine}</p>` : ''}
           ${badges.length ? `<p class="badges">${badges.map((b) => `<span>${b}</span>`).join('')}</p>` : ''}
+          ${resultsPanel(career)}
           <table class="standings">
             <thead><tr>${head}</tr></thead>
             <tbody>${rows}</tbody>

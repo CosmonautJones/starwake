@@ -9,6 +9,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { storage } from './core/storage.js';
+import { loadCareer, recordRun, RunTracker } from './core/career.js';
 import { AudioEngine } from './core/audio.js';
 import { Input } from './core/input.js';
 import { mulberry32, randomId, $ } from './core/util.js';
@@ -26,6 +27,7 @@ const params = new URLSearchParams(location.search);
 class App {
   constructor() {
     this.settings = storage.loadSettings();
+    loadCareer(); // migrate old personal bests into medals before any new race is recorded
     if (!COURSES.some((c) => c.id === this.settings.trackId)) this.settings.trackId = COURSES[0].id;
     if (!ARENAS.some((a) => a.id === this.settings.arenaId)) this.settings.arenaId = ARENAS[0].id;
     this.canvas = $('#scene');
@@ -237,6 +239,7 @@ class App {
       this.screens.show('error', { message: `Couldn't load the ${battle ? 'arena' : 'course'}: ${err.message}` });
       return;
     }
+    this.run = new RunTracker(); // career: laps, clean laps, demolitions for the results
     this.hud = new Hud(this.hudRoot, this.race);
     this.hud.hint(this.input.activeDevice === 'gamepad'
       ? 'Left stick aim · RT thrust · RB fire · LB missile · A boost · Y reset'
@@ -282,6 +285,7 @@ class App {
   onRaceEvent(e) {
     const hud = this.hud;
     const a = this.audio;
+    this.run?.event(e);
     switch (e.type) {
       case 'countdown': a.play('countdown'); hud?.center(String(e.n), 'count'); break;
       case 'go': a.play('go'); hud?.center('Go', 'go'); hud?.hint(''); break;
@@ -352,7 +356,20 @@ class App {
     this.input.setRaceMode(false);
     this.input.exitPointerLock();
     this.canvas.classList.remove('in-race');
-    this.screens.overlay('results', { results, rank, records, mode: this.race.mode, trackName: this.race.def.name, game: this.race.game, teams: teams || (this.race.teams ? this.race.teamScores() : null) });
+    teams = teams || (this.race.teams ? this.race.teamScores() : null);
+    let career = null;
+    try {
+      // Local-only progression; never allowed to get in the way of the results.
+      const team = teams && me?.team != null ? (teams[0] === teams[1] ? 'draw' : (teams[0] > teams[1]) === (me.team === 0) ? 'win' : 'loss') : null;
+      career = recordRun({
+        game: this.race.game, mode: this.race.mode, def: this.race.battle ? null : this.race.def, laps: this.race.laps,
+        skill: this.settings.difficulty, finished: !!me && !me.dnf && me.time != null, time: me?.time ?? null,
+        rank, field: results.length, personalBest: records.raceBest, team,
+        ...(this.run?.summary() || {}),
+      });
+    } catch (err) { console.warn('Career update skipped:', err); }
+    this.run = null;
+    this.screens.overlay('results', { results, rank, records, mode: this.race.mode, trackName: this.race.def.name, game: this.race.game, teams, career });
   }
 
   toast(text, tone = '') {

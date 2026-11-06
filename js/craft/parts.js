@@ -36,6 +36,9 @@ export const WINGS = {
   delta: { label: 'Delta', blurb: 'Planted in fast corners.', mods: { grip: 1.5, speed: 0.5, handling: -1 }, mass: 160 },
   broad: { label: 'Broad', blurb: 'Huge grip, more drag.', mods: { grip: 2.5, speed: -1, handling: -0.5 }, mass: 240 },
   xwing: { label: 'Split X', blurb: 'Agile in every direction.', mods: { handling: 1.5, grip: 1, speed: -1, boost: -0.5 }, mass: 180 },
+  // Unlockable (see js/core/career.js). Sidegrades, not upgrades.
+  forward: { label: 'Forward swept', blurb: 'Bites into the turn.', mods: { handling: 1, grip: 1, speed: -1 }, mass: 150 },
+  blade: { label: 'Blade', blurb: 'Long and thin. Fast, a little loose.', mods: { speed: 1.5, grip: -0.5, handling: -0.5 }, mass: 110 },
 };
 
 export const ENGINES = {
@@ -43,6 +46,7 @@ export const ENGINES = {
   twin: { label: 'Twin', blurb: 'Balanced thrust.', mods: { accel: 0.5, speed: 0.5 }, mass: 300 },
   quad: { label: 'Quad', blurb: 'Brutal thrust, heavy.', mods: { speed: 1, accel: 1.5, handling: -1, boost: -1 }, mass: 520 },
   ion: { label: 'Ion Ring', blurb: 'Strongest boost burn.', mods: { boost: 2.5, accel: -0.5, speed: 0.5, handling: -0.5 }, mass: 340 },
+  tri: { label: 'Tri', blurb: 'Three-pot punch off the line.', mods: { accel: 1, boost: 0.5, speed: 0.5, handling: -1 }, mass: 420 },
 };
 
 export const FINS = {
@@ -50,6 +54,7 @@ export const FINS = {
   twin: { label: 'Twin', blurb: 'Stable at speed.', mods: { grip: 0.5, speed: 0.5, handling: -0.5 }, mass: 60 },
   tall: { label: 'Tall', blurb: 'Tracks straight.', mods: { grip: 1, handling: -0.5 }, mass: 90 },
   tri: { label: 'Tri', blurb: 'Quick to rotate.', mods: { handling: 1, grip: 0.5, speed: -1 }, mass: 100 },
+  quad: { label: 'X tail', blurb: 'Four canted fins. Rock steady.', mods: { grip: 1.5, handling: 0.5, speed: -1.5 }, mass: 120 },
 };
 
 export const COCKPITS = {
@@ -65,6 +70,31 @@ export const SLOTS = [
   { key: 'engines', label: 'Engines', options: ENGINES },
   { key: 'fins', label: 'Fins', options: FINS },
   { key: 'cockpit', label: 'Cockpit', options: COCKPITS },
+];
+
+/** Cosmetic only: hull paint finish and boost trail style. Never touch the stat model. */
+export const FINISHES = {
+  standard: { label: 'Standard', blurb: 'Satin factory paint.' },
+  metallic: { label: 'Metallic', blurb: 'Flake paint that catches the light.' },
+  pearl: { label: 'Pearl', blurb: 'Soft sheen that shifts at the edges.' },
+  chrome: { label: 'Chrome', blurb: 'Polished like a mirror.' },
+  iridescent: { label: 'Iridescent', blurb: 'Colour flows as you turn.' },
+};
+
+export const TRAILS = {
+  glow: { label: 'Glow', blurb: 'A clean ribbon in your glow colour.' },
+  comet: { label: 'Comet', blurb: 'Long, white-hot core.' },
+  pulse: { label: 'Pulse', blurb: 'Bands of light race down the wake.' },
+  ember: { label: 'Ember', blurb: 'Smouldering, flickering heat.' },
+  prism: { label: 'Prism', blurb: 'Every colour at once.' },
+  aurora: { label: 'Aurora', blurb: 'Rippling sheets of trim and glow.' },
+  starwake: { label: 'Starwake', blurb: 'Gold and starlight. For the very best.' },
+};
+
+/** Cosmetic slots edited in the hangar alongside the parts. */
+export const LOOK_SLOTS = [
+  { key: 'finish', label: 'Finish', options: FINISHES, fallback: 'standard' },
+  { key: 'trail', label: 'Trail', options: TRAILS, fallback: 'glow' },
 ];
 
 export const STAT_KEYS = [
@@ -115,6 +145,9 @@ export function normalizeDesign(d) {
   }
   for (const k of ['primary', 'secondary', 'glow']) {
     if (!/^#[0-9a-fA-F]{6}$/.test(out.colors[k])) out.colors[k] = DEFAULT_DESIGN.colors[k];
+  }
+  for (const slot of LOOK_SLOTS) {
+    if (typeof out[slot.key] !== 'string' || !Object.hasOwn(slot.options, out[slot.key])) out[slot.key] = slot.fallback;
   }
   out.name = String(out.name || 'Unnamed').slice(0, 18);
   return out;

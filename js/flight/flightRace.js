@@ -270,7 +270,7 @@ export class FlightRace {
     if (r.kind === 'ai') e.ai = this._makeAI(e, this.settings.difficulty || 'normal', hashString(r.id) + this.seed);
     const noz = [...craft.nozzles].sort((a, b) => a.pos.x - b.pos.x);
     const pick = noz.length > 1 ? [noz[0], noz[noz.length - 1]] : noz;
-    for (const n of pick) e.trails.push({ nozzle: n, trail: new Trail(this.scene, craft.glowColor, { length: this.quality === 'low' ? 14 : 22, width: n.r * 0.4 }) });
+    for (const n of pick) e.trails.push({ nozzle: n, trail: new Trail(this.scene, craft.glowColor, { length: this.quality === 'low' ? 14 : 22, width: n.r * 0.4, style: craft.design.trail, color2: craft.design.colors.secondary }) });
     this.entities.push(e);
     this._placeMesh(e, 0);
   }

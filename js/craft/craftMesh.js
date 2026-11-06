@@ -168,6 +168,8 @@ const WINGS = {
   delta: { root: { le: -1.7, te: 1.8, th: 0.2 }, tip: { xl: 2.25, le: 1.58, xt: 2.3, te: 1.8, th: 0.05 } },
   broad: { root: { le: -1.1, te: 1.5, th: 0.19 }, tip: { xl: 3.2, le: -0.4, xt: 3.4, te: 1.0, th: 0.08 } },
   xwing: { root: { le: -0.6, te: 1.3, th: 0.15 }, tip: { xl: 2.5, le: 0.6, xt: 2.5, te: 1.1, th: 0.06 } },
+  forward: { root: { le: -0.5, te: 1.7, th: 0.17 }, tip: { xl: 2.45, le: -1.25, xt: 2.5, te: -0.55, th: 0.07 } },
+  blade: { root: { le: -0.4, te: 1.3, th: 0.15 }, tip: { xl: 3.7, le: 1.15, xt: 3.8, te: 1.55, th: 0.05 } },
 };
 
 const wingPaint = (ctx) => {
@@ -198,7 +200,7 @@ function wingTemplate(kind, hi) {
 function addWings(m, kind, mount, hi, nav) {
   if (kind === 'none') return;
   const t = wingTemplate(kind, hi);
-  const pairs = kind === 'xwing' ? [0.28, -0.28] : [kind === 'delta' ? -0.04 : 0.05];
+  const pairs = kind === 'xwing' ? [0.28, -0.28] : [kind === 'delta' ? -0.04 : kind === 'forward' ? -0.07 : 0.05];
   for (const dihedral of pairs) {
     const yOff = kind === 'xwing' ? Math.sign(dihedral) * 0.15 : 0;
     for (const sx of [-1, 1]) {
@@ -243,6 +245,9 @@ function addEngines(m, kind, mount, hi) {
   else if (kind === 'twin') { place(-sp, mount.y, 0.48, 2.4); place(sp, mount.y, 0.48, 2.4); }
   else if (kind === 'quad') {
     for (const sx of [-1, 1]) for (const sy of [-1, 1]) place(sx * sp * 1.05, mount.y + sy * 0.32, 0.36, 2.5);
+  } else if (kind === 'tri') {
+    place(0, mount.y + 0.42, 0.4, 2.3);
+    for (const sx of [-1, 1]) place(sx * sp * 1.05, mount.y - 0.18, 0.4, 2.4);
   } else if (kind === 'ion') {
     const zc = mount.z + 0.1, y = mount.y;
     const R0 = 0.95, a = 0.2, c = 0.07;
@@ -291,6 +296,10 @@ function addFins(m, kind, mount, hi, strobes) {
   if (kind === 'twin') { strobes.push(put(1.1, 1.5, -0.55, 0, 0.25)); strobes.push(put(1.1, 1.5, 0.55, 0, -0.25)); }
   else if (kind === 'tall') strobes.push(put(1.8, 1.9, 0, 0, 0));
   else if (kind === 'tri') { strobes.push(put(1.2, 1.4, 0, 0, 0)); put(1.0, 1.2, -0.3, -0.2, 2.2); put(1.0, 1.2, 0.3, -0.2, -2.2); }
+  else if (kind === 'quad') {
+    strobes.push(put(1.0, 1.4, -0.45, 0, 0.6)); strobes.push(put(1.0, 1.4, 0.45, 0, -0.6));
+    put(0.85, 1.2, -0.4, -0.25, 2.45); put(0.85, 1.2, 0.4, -0.25, -2.45);
+  }
 }
 
 // ---------------------------------------------------------------- cockpits
@@ -439,7 +448,7 @@ export function buildCraft(designIn, { lod = 'high', underglow = true } = {}) {
   const lodKey = lod === 'low' ? 'low' : 'high';
   const shape = acquireShape(d, lodKey);
 
-  const hullMat = makeHullMaterial({ primary, secondary, glow });
+  const hullMat = makeHullMaterial({ primary, secondary, glow }, d.finish);
   const glassMat = makeGlassMaterial(glow);
   const fMat = makeFlameMaterial(glow.clone());
   const lightsMat = makeLightsMaterial(glow);
