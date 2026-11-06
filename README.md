@@ -36,6 +36,19 @@ Ships handle like Rocket League cars in a pod-race tunnel:
 - **Dodge**: a quick sideways barrel roll that also knocks away incoming lasers, with a short cooldown.
 - **Near misses** with rocks and rivals top up your boost.
 - Setbacks stay short: stuns are capped and you can't be stun-locked, and respawns never put you ahead of where you were.
+- **Music that follows the race**: the soundtrack starts sparse on the grid and rises into Go, then builds as you speed up, boost, go supersonic or close on a rival. Lead the race and a melody joins in; on the last lap the key lifts and a lead line kicks in; crossing the line plays a short fanfare.
+- **Wall sparks**: grind the tunnel wall and sparks pour off the contact point, for every ship. **Big boost pads** hit with a shockwave ring, a flash and a punch of speed.
+
+### Ghosts and replays
+
+- **Ghosts**: in solo races your best run on each course and lap count is saved and races with you as a translucent ghost. Under the lap counter the HUD shows how far ahead (green) or behind (orange) of it you are. Turn it off with Ghost in race setup.
+- **Finish replay**: when you cross the line you get a short slow-motion replay from a few camera angles. Press any key, click or press a controller button to skip it.
+- **Highlights**: demolitions, supersonic near misses and photo finishes are saved as you race. Choose **Watch highlights** on the results screen.
+- In single-player, demolishing a rival briefly slows time. Reduce motion turns this off and plays replays at normal speed.
+
+### Medals and pilot rank
+
+Every course has bronze, silver and gold target times, scaled to the number of laps. Earn them in solo races; set Opponents to **Time trial** to race just the clock. Beat gold and a secret fourth medal appears. Races and battles earn XP toward ten pilot ranks, from Cadet to Starwake ace. New ranks and medals unlock extra hangar parts, paint finishes (metallic, pearl, chrome, iridescent) and boost trail styles; locked items show what they need, and you can preview them in the hangar. Progress is saved in this browser only and never affects multiplayer.
 
 | Action | Keyboard + mouse | Controller |
 | --- | --- | --- |
@@ -69,6 +82,9 @@ Ships handle like Rocket League cars in a pod-race tunnel:
 | Corona Run | Easy | A wide tube of long arcs past a ringed gas giant, narrowing through an orbital station |
 | Shatterfield | Medium | Asteroids drifting through the tunnel around a broken freighter |
 | Ice Veil | Hard | A narrow tube of tight vertical turns, ice shards and a minefield |
+| Rift Forks | Medium | Rock spines split the tube three times: a wide safe channel, or a tight one with a big boost pad and mines |
+| Helix Braid | Hard | The tube doubles back and twists a full turn round itself a few metres apart: rivals flash past on the other side of the wall |
+| Daily run | Varies | A new wormhole every day (UTC), generated from the date: the same course for everyone |
 
 | Arena | Character |
 | --- | --- |
@@ -79,7 +95,7 @@ Ships handle like Rocket League cars in a pod-race tunnel:
 
 Pick a body (Dart, Arrow, Hauler, Glider, Hoverbike), then wings, engines, fins and cockpit, and paint the hull, trim and glow. Each part shifts six ratings: top speed, acceleration, handling (turn rate), grip (how quickly your velocity follows the nose), boost and armor. Mass is the trade-off: heavy craft turn and accelerate slower but carry more hull and shrug off collisions. The stat panel shows changes against the design you started from.
 
-The five presets are read-only. Editing one saves your changes as a new craft. Your designs, settings and personal bests are saved in the browser's localStorage.
+**Finish** and **Trail** change the paint finish and your boost trail; other players see them. The five presets are read-only. Editing one saves your changes as a new craft. Your designs, settings and personal bests are saved in the browser's localStorage.
 
 ## Multiplayer
 
@@ -88,7 +104,13 @@ Choose **Multiplayer**, then host or join with a 4-letter room code. The host pi
 There are two connection modes, and both really connect players:
 
 1. **This browser**: a `BroadcastChannel` links Starwake tabs and windows open in the same browser on one computer. It needs no server, so it's handy for testing and side-by-side play.
-2. **Relay server**: `npm start` also runs a small WebSocket relay at `/relay`. Players on other computers open the server's address (the startup log prints your LAN address) and join with the room code. To play over the internet, host `server/server.mjs` anywhere that runs Node (or put it behind a tunnel) and share the URL.
+2. **Online**: play anyone over the internet through the WebSocket relay in `server/server.mjs`. `npm start` runs the game with a relay at `/relay`, so players who open your server's address can host and join by room code. In the lobby, **Copy invite link** gives friends a link that joins the room directly, and the lobby and race list show each player's ping to the host.
+
+### Hosting the relay
+
+To host the relay on its own (for a static copy of the game, like the one on travisjohnjones.com), deploy it to Render with the included `render.yaml` blueprint (New → Blueprint → this repo), or build the `Dockerfile` on Fly.io or Railway. Then point the game at it: set `RELAY_URL` in `js/config.js` of the hosted copy (for example `wss://starwake-relay.onrender.com/relay`), and allow `wss://` and `https://` for that host in the site's `connect-src`. A `?relay=wss://…` URL parameter or the Server field in the Online menu also work.
+
+Relay env vars: `PORT`, `HOST`, `RELAY_ONLY` (serve only `/healthz` and `/relay`), `ALLOWED_ORIGINS` (comma-separated origins, hosts or `*.domain`; defaults to localhost and travisjohnjones.com), `MAX_ROOMS` (500), `MAX_PEERS` (8), `MAX_MSG_BYTES` (64 KiB), `MSG_RATE`/`MSG_BURST` (200/400 per second), `PING_MS` (25000). `GET /healthz` reports status. A free Render service sleeps after about 15 idle minutes, so the first player may wait up to a minute while it wakes; the game says so.
 
 How it works: each player simulates their own ship and sends compact state snapshots 20 times a second. Remote ships are drawn 110 ms in the past with interpolation. Shots, missiles, broken objects and pickups travel as small game events. Whoever fires decides whether a shot hit, and the victim's game applies the damage. The host simulates the AI pilots and owns the lobby, the end of a battle and the final results. Every client builds the same course or arena layout from its id, so object ids match everywhere. Countdowns are pinned to a shared start moment, so everyone gets GO together.
 
@@ -98,6 +120,7 @@ Limits, stated plainly: there is no anti-cheat, because clients are trusted to r
 
 Networking is isolated in `js/net/`:
 
+- `online.js`: relay URL resolution (user setting → `?relay=` → `RELAY_URL` → same host when served by the relay → localhost in development) and invite links.
 - `transport.js`: a `Transport` base class (`open(room)`, `send(msg, to?)`, `close()`, events `message` / `peer-joined` / `peer-left` / `closed`) plus the `BroadcastTransport` and `WsTransport` implementations.
 - `session.js`: `NetSession`, the lobby and race protocol. It runs on top of any `Transport`.
 
@@ -109,17 +132,20 @@ To use WebRTC, a hosted service (Ably, Pusher, PartyKit, etc.) or your own serve
 index.html            page shell + import map
 css/style.css         all interface styling
 js/main.js            app shell: renderer, bloom, stage switching, game loop
-js/core/              util, storage, input (mouse, keyboard, gamepad), synthesized audio
+js/config.js          deployment settings (RELAY_URL)
+js/core/              util, storage, input (mouse, keyboard, gamepad), synthesized audio and adaptive
+                      music, race feel (music cues + rumble), career (medals, ranks, unlocks)
 js/craft/             part catalog + stat model, procedural craft meshes
 js/flight/            courses + arenas, ship physics, world (breakables, pickups, collisions), weapons,
                       player assists, boost pads, hazards (plasmoids, Vesk), race AI + battle AI,
-                      match controller
+                      match controller, daily course generator + shared course checks, ghosts, replays
 js/space/             sky + planets, wormhole tunnel, procedural asteroids, props (stations, wrecks…),
-                      effects, debris, speed effects, hazard visuals
+                      effects, debris, speed effects, wall sparks, split-lane dividers, ghost hologram,
+                      hazard visuals
 js/world/             engine trails/sparks, hangar stage
 js/ui/                screens (menus, lobby, results), hangar editor, HUD
 js/net/               transports + multiplayer session
-server/server.mjs     static file server + WebSocket relay
+server/server.mjs     static file server + WebSocket relay (render.yaml, Dockerfile to host it)
 tools/                headless checks (see below)
 vendor/three/         Three.js r187 (MIT) + bloom post-processing addons
 ```
@@ -127,7 +153,11 @@ vendor/three/         Three.js r187 (MIT) + bloom post-processing addons
 ### Design notes
 
 - **Arcade flight model.** The cursor commands pitch and yaw rates, and roll is manual. "Flight assist" swings the velocity vector onto the nose at a rate set by the craft's grip, and turns most sideways speed back into forward speed (never more than you had), so light craft carve and heavy ones slide. Throttle sets a target speed. Physics run at a fixed 120 Hz.
-- **The wormhole** is a tube round the course spline whose radius varies along the lap (pinches narrow it through stations and tight bends). Each physics step finds the ship's place on the line by hill-climbing from the last one, pushes it back inside the wall, and counts progress as distance along the line, so laps, positions and gates need no checkpoints.
+- **The wormhole** is a tube round the course spline whose radius varies along the lap (pinches narrow it through stations and tight bends). Each physics step finds the ship's place on the line by hill-climbing from the last one, capped at how far the ship could have flown, pushes it back inside the wall, and counts progress as distance along the line, so laps, positions and gates need no checkpoints. The cap is what lets Helix Braid pass within metres of itself: courses declare their intentional close passes (`crossings`) and split channels (`splits`), and the course check still fails accidental ones.
+- **The daily run** is generated from the date with a seeded RNG (no `Math.sin`, so every browser gets identical control points), checked with the same rules as the built-in courses, and re-seeded until it passes.
+- **Adaptive music.** The race track is a step sequencer of nine layers on their own gains. Intensity (speed, boost, supersonic, rival gap) fades layers and opens a filter; last lap, leading and finish change the arrangement on bar lines, supersonic on beats.
+- **Ghosts and replays** are cosmetic and local: ghosts are stored compactly (about 12 KB per minute, 320 KB budget), and replays read a 7-second rolling buffer of every ship, so the shared simulation is never paused or slowed in multiplayer.
+- **Medal times** come from the course itself (length, obstacle density and bend load), calibrated against AI runs, so they work for generated courses too.
 - **One seeded world.** Every rock, pod and mine is placed from the course or arena id with a seeded RNG and indexed in a spatial grid used for collisions, laser raycasts and AI look-ahead.
 - **Race AI** flies with the same inputs a player has: it pursues a drifting lane down the tunnel, lines up for boost gates, plans speed from the curvature ahead, steers its velocity rather than its nose, dodges or shoots obstacles, and fights rivals in front of it. **Battle AI** picks and sticks to targets, chases for a firing solution, jinks away from incoming missiles, grabs pickups when hurt or out of missiles, and stays inside the arena.
 - **Hazards** are deterministic where they can be: plasmoids follow seeded paths, so every client draws the same ones without sync. Vesk drones are simulated by one client (solo, or the multiplayer host) and sent to the others 10 times a second.
@@ -138,26 +168,31 @@ vendor/three/         Three.js r187 (MIT) + bloom post-processing addons
 ## Checks and debugging
 
 ```bash
-npm run check                        # wormhole geometry: bends vs tube radius, overlaps, gates inside
+npm run check                        # wormhole geometry on every course + today's daily and 60 sample dates
+node tools/check-courses.mjs 200     #   … or more daily dates
 node tools/flight-sim.mjs normal 2   # headless race with weapons: every preset, every course, AI must finish
+node tools/flight-sim.mjs normal 1 daily   # just today's daily run
+node tools/replay-sim.mjs            # ghost record/pack/delta, replay buffer and highlight bounds
+node tools/career-sim.mjs            # medal targets on every course incl. generated ones, XP, unlocks, saves
 node tools/assist-sim.mjs            # hands-off, flailing and backwards pilots must still finish a lap
 node tools/battle-sim.mjs normal 180 # headless battle: bots in every arena, kills/deaths/crash stats
 node tools/player-sim.mjs            # rough-human pilots with and without assists: hit rate, kills, finishes
 node tools/hazard-sim.mjs            # hazards: drones fight, plasmoids are identical on every client
 node tools/test-net.mjs              # multiplayer: both transports, relay server, error paths
-npm test                             # the course check, race, assist, battle and network tests together
+npm test                             # all of the above together
 ```
 
 Visual galleries open in the browser while the game is served: `tools/craft-gallery.html`, `tunnel-gallery.html`, `hazard-gallery.html` and `fx-gallery.html`.
 
 URL parameters for testing:
 
-- `?quick=race&track=shatter` skips the menus and starts a solo race (`corona`, `shatter`, `veil`).
+- `?quick=race&track=shatter` skips the menus and starts a solo race (`corona`, `shatter`, `veil`, `forks`, `braid`, `daily` or `daily-YYYY-MM-DD`).
+- `?join=ABCD` joins a multiplayer room (this is what invite links use); `?relay=wss://…` picks the relay.
 - `?quick=battle&arena=glacier` starts a solo battle (`driftyard`, `glacier`).
 - `?autopilot=1` hands your craft to an AI pilot.
 - `?timescale=4` fast-forwards the simulation.
 
-Settings → **Show frame rate** displays the frame rate. If a machine struggles, set **Quality** to Low (it turns off bloom, lowers resolution and reduces particles).
+Settings → **Show frame rate** displays the frame rate. If a machine struggles, set **Quality** to Low (it turns off bloom, lowers resolution and reduces particles). **Speed effects** (Full, Reduced, Off) turns down speed streaks, radial blur, camera shake and FOV kick; Reduce motion caps it at Reduced. **Controller rumble** turns gamepad vibration on or off.
 
 ## Credits
 
