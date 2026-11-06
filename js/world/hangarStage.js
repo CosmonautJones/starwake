@@ -4,6 +4,9 @@ import * as THREE from 'three';
 import { SpaceSky } from '../space/sky.js';
 import { buildCraft } from '../craft/craftMesh.js';
 import { damp } from '../core/util.js';
+import { Trail } from './fx.js';
+
+const _tp = new THREE.Vector3(), _tr = new THREE.Vector3(1, 0, 0), _td = new THREE.Vector3();
 
 const HANGAR_THEME = {
   space: '#04060d', nebula: ['#23408f', '#5a2f8f'], nebulaStrength: 0.45, starDensity: 1,
@@ -47,6 +50,7 @@ export class HangarStage {
     this.scene.environmentIntensity = 0.45;
 
     this.craft = null;
+    this.trails = [];
     this.craftGroup = new THREE.Group();
     this.scene.add(this.craftGroup);
   }
@@ -55,6 +59,16 @@ export class HangarStage {
     if (this.craft) { this.craftGroup.remove(this.craft.root); this.craft.dispose(); }
     this.craft = buildCraft(design);
     this.craftGroup.add(this.craft.root);
+    // Boost trail preview, streaming back from the outer nozzles as if in flight.
+    this.trails.forEach((t) => t.trail.dispose());
+    const noz = [...this.craft.nozzles].sort((a, b) => a.pos.x - b.pos.x);
+    const pick = noz.length > 1 ? [noz[0], noz[noz.length - 1]] : noz;
+    this.trails = pick.map((n) => {
+      const trail = new Trail(this.scene, this.craft.glowColor, { length: 22, width: n.r * 0.4, style: this.craft.design.trail, color2: this.craft.design.colors.secondary });
+      trail.mat.uniforms.uIntensity.value = 0.9;
+      trail.mat.uniforms.uNear.value = 1;
+      return { nozzle: n, trail };
+    });
     this.ringMat.color.set(design.colors.glow).multiplyScalar(1.2);
     this.pop = 1;
   }
@@ -81,6 +95,12 @@ export class HangarStage {
     if (this.craft) {
       this.craft.root.position.y = Math.sin(this.time * 1.6) * 0.15;
       this.craft.setThrust(0.35 + Math.sin(this.time * 2) * 0.05, 0, this.time);
+      this.craft.root.updateMatrixWorld();
+      _td.set(0, 0, Math.min(0.6, dt * 26));
+      for (const t of this.trails) {
+        t.trail.drift(_td);
+        t.trail.push(_tp.copy(t.nozzle.pos).applyMatrix4(this.craft.root.matrixWorld), _tr, 0.75);
+      }
       if (this.pop > 0) {
         this.pop = Math.max(0, this.pop - dt * 3);
         this.craft.root.scale.setScalar(1 + Math.sin(this.pop * Math.PI) * 0.06);
@@ -96,6 +116,7 @@ export class HangarStage {
 
   dispose() {
     if (this.craft) this.craft.dispose();
+    this.trails.forEach((t) => t.trail.dispose());
     this.scene.traverse((o) => { o.geometry?.dispose?.(); if (o.material && o.material.dispose) o.material.dispose(); });
     this.env.dispose();
   }

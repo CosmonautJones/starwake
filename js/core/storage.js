@@ -7,6 +7,7 @@ const KEYS = {
   settings: 'starwake.settings.v1',
   selected: 'starwake.selected.v1',
   records: 'starwake.records.v1',
+  career: 'starwake.career.v1',
 };
 
 export const DEFAULT_SETTINGS = {
@@ -73,6 +74,10 @@ export const storage = {
   },
 
   records() { return read(KEYS.records, {}); },
+
+  /** Raw pilot career (XP, medals); js/core/career.js validates and migrates it. */
+  loadCareerRaw() { return read(KEYS.career, null); },
+  saveCareerRaw(c) { return write(KEYS.career, c); },
   /** Returns {raceBest:boolean, lapBest:boolean} for celebration. */
   submitRecord(trackId, laps, raceTime, bestLap) {
     const all = this.records();

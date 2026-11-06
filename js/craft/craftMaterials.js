@@ -76,6 +76,15 @@ export function craftEnvironment() {
 // ---------------------------------------------------------------- hull
 const MR = [[0.15, 0.42], [0.2, 0.46], [0.12, 0.38], [0.78, 0.42], [0.95, 0.32], [0.3, 0.72], [0, 1], [0, 1]];
 const EM = [0, 0, 0, 0, 0, 0, 1.0, 1.25];
+// Paint finishes (design.finish): metalness/roughness for the primary, secondary and accent
+// channels, plus an iridescent hue shift by view angle. 'standard' is the original look.
+const FINISH = {
+  standard: { mr: [MR[0], MR[1], MR[2]], iri: 0 },
+  metallic: { mr: [[0.72, 0.28], [0.66, 0.32], [0.6, 0.3]], iri: 0 },
+  pearl: { mr: [[0.35, 0.2], [0.3, 0.24], [0.3, 0.24]], iri: 0.3 },
+  chrome: { mr: [[1, 0.06], [0.95, 0.1], [0.9, 0.1]], iri: 0 },
+  iridescent: { mr: [[0.6, 0.18], [0.55, 0.22], [0.5, 0.22]], iri: 1 },
+};
 
 // A plain function (not an arrow) so every hull material shares one program: three keys
 // programs by onBeforeCompile.toString(), while the uniforms stay per material.
@@ -90,7 +99,7 @@ uniform vec3 uPal[8];
 uniform vec2 uMR[8];
 uniform float uEm[8];
 uniform vec3 uRim;
-uniform float uRimK, uHot, uPanel;
+uniform float uRimK, uHot, uPanel, uIri;
 varying float vChan;
 varying vec3 vLocal;
 float sw_seam(float x, float period, float width) {
@@ -105,6 +114,12 @@ if (ci <= 2) {
   // faint lateral panel seams every 1.3 units
   float seam = sw_seam(vLocal.z + 0.35, 1.3, 0.012);
   pc *= 1.0 - seam * uPanel;
+  if (uIri > 0.0 && ci <= 1) {
+    // thin-film style hue shift: grazing angles and position along the hull rotate the hue
+    float iNV = saturate(dot(normal, normalize(vViewPosition)));
+    vec3 film = 0.5 + 0.5 * cos(6.28318 * (vec3(0.0, 0.33, 0.67) + (1.0 - iNV) * 1.3 + vLocal.z * 0.07));
+    pc = mix(pc, pc * 0.3 + film * 0.8, uIri * (0.3 + 0.7 * (1.0 - iNV)));
+  }
 }
 diffuseColor.rgb = pc;
 metalnessFactor = uMR[ci].x;
@@ -122,15 +137,17 @@ if (ci < 6) {
 #include <opaque_fragment>`);
 }
 
-export function makeHullMaterial(colors) {
+export function makeHullMaterial(colors, finish = 'standard') {
+  const fin = FINISH[finish] || FINISH.standard;
   const u = {
     uPal: { value: Array.from({ length: 8 }, () => new THREE.Color()) },
-    uMR: { value: MR.map(([m, r]) => new THREE.Vector2(m, r)) },
+    uMR: { value: MR.map(([m, r], i) => (i < 3 ? new THREE.Vector2(...fin.mr[i]) : new THREE.Vector2(m, r))) },
     uEm: { value: EM.slice() },
     uRim: { value: new THREE.Color() },
     uRimK: { value: 0.5 },
     uHot: { value: 1 },
     uPanel: { value: 0.32 },
+    uIri: { value: fin.iri },
   };
   setPalette(u, colors);
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.5, roughness: 0.4, envMap: craftEnvironment(), envMapIntensity: 1.0 });

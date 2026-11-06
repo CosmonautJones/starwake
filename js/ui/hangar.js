@@ -2,9 +2,11 @@
 // save automatically; editing a preset forks it into a new custom craft.
 
 import { storage } from '../core/storage.js';
-import { SLOTS, STAT_KEYS, PAINT_SWATCHES, PRESETS, computeStats, normalizeDesign } from '../craft/parts.js';
+import { SLOTS, LOOK_SLOTS, STAT_KEYS, PAINT_SWATCHES, PRESETS, computeStats, normalizeDesign } from '../craft/parts.js';
 import { escapeHtml, randomId, $, $$ } from '../core/util.js';
+import { loadCareer, isUnlocked, lockNote } from '../core/career.js';
 import { html } from './screens.js';
+import { LOCK_ICON } from './careerView.js';
 
 export class HangarScreen {
   constructor(app, onExit) {
@@ -35,6 +37,7 @@ export class HangarScreen {
         <aside class="panel builder" aria-label="Build">
           <label class="field"><span>Name</span><input data-k="name" maxlength="18" autocomplete="off" spellcheck="false"></label>
           <div data-k="slots"></div>
+          <div data-k="looks"></div>
           <div data-k="paint"></div>
         </aside>
         <div class="panel stats" data-k="stats" aria-label="Handling"></div>
@@ -84,6 +87,7 @@ export class HangarScreen {
   select(id) {
     const d = this.designs.find((x) => x.id === id);
     if (!d) return;
+    this.peek = null;
     this.current = { ...normalizeDesign(d), id: d.id, preset: !!d.preset };
     this.baseline = computeStats(this.current);
     this.renderAll();
@@ -91,6 +95,7 @@ export class HangarScreen {
 
   /** Apply a change; presets fork into a new custom craft first. */
   mutate(fn, { keepFocus = false } = {}) {
+    this.peek = null;
     if (this.current.preset) {
       const fork = { ...normalizeDesign(this.current), colors: { ...this.current.colors }, id: 'c-' + randomId(8), preset: false, name: `${this.current.name} Mk II` };
       this.designs.push(fork);
@@ -109,11 +114,20 @@ export class HangarScreen {
   }
 
   cycle(slot, step) {
-    const def = SLOTS.find((s) => s.key === slot);
+    const def = SLOTS.find((s) => s.key === slot) || LOOK_SLOTS.find((s) => s.key === slot);
     const keys = Object.keys(def.options);
-    const i = keys.indexOf(this.current[slot]);
+    const i = keys.indexOf(this.peek?.slot === slot ? this.peek.key : this.current[slot]);
     const next = keys[(i + step + keys.length) % keys.length];
-    this.mutate((d) => { d[slot] = next; });
+    // Locked options can be previewed but not fitted; the design keeps what it had.
+    if (next !== this.current[slot] && !isUnlocked(slot, next, loadCareer())) {
+      this.peek = { slot, key: next };
+      this.renderBuilder();
+      this.renderStats();
+      this.stage.setDesign(this.viewDesign());
+    } else if (next === this.current[slot]) {
+      this.peek = null;
+      this.renderAll();
+    } else this.mutate((d) => { d[slot] = next; });
     this.app.audio.play('click');
     // keep focus on the same cycler for gamepad users
     requestAnimationFrame(() => $(`[data-cycle=${slot}]`, this.el)?.focus({ preventScroll: true }));
@@ -124,6 +138,7 @@ export class HangarScreen {
   }
 
   createNew() {
+    this.peek = null;
     const d = { ...normalizeDesign(PRESETS[0]), colors: { ...PRESETS[0].colors }, id: 'c-' + randomId(8), preset: false, name: `Craft ${this.designs.filter((x) => !x.preset).length + 1}` };
     this.designs.push(d);
     this.current = { ...d };
@@ -134,6 +149,7 @@ export class HangarScreen {
   }
 
   duplicate() {
+    this.peek = null;
     const d = { ...normalizeDesign(this.current), colors: { ...this.current.colors }, id: 'c-' + randomId(8), preset: false, name: `${this.current.name} copy`.slice(0, 18) };
     this.designs.push(d);
     this.current = { ...d };
@@ -142,6 +158,7 @@ export class HangarScreen {
   }
 
   remove() {
+    this.peek = null;
     if (this.current.preset) { this.flashState('Presets can’t be deleted. Duplicate one to make it yours.'); this.app.audio.play('error'); return; }
     const name = this.current.name;
     this.designs = this.designs.filter((x) => x.id !== this.current.id);
@@ -152,6 +169,7 @@ export class HangarScreen {
   }
 
   fly() {
+    if (this.peek) { this.peek = null; this.renderAll(); }
     this.flyingId = this.current.id;
     storage.setSelectedId(this.current.id);
     this.app.net?.updateProfile({ name: this.app.settings.playerName, design: this.app.playerDesign() });
@@ -178,11 +196,14 @@ export class HangarScreen {
   unmount() { /* stage is kept for next visit */ }
 
   // ---------- rendering
+  /** The design on the turntable: the current one, plus a locked option being previewed. */
+  viewDesign() { return this.peek ? { ...this.current, [this.peek.slot]: this.peek.key } : this.current; }
+
   renderAll(keepFocus = false) {
     this.renderList();
     this.renderBuilder(keepFocus);
     this.renderStats();
-    this.stage.setDesign(this.current);
+    this.stage.setDesign(this.viewDesign());
   }
 
   renderList() {
@@ -203,17 +224,22 @@ export class HangarScreen {
     const d = this.current;
     const name = this.k('name');
     if (!keepFocus || document.activeElement !== name) name.value = d.name;
-    this.k('slots').innerHTML = SLOTS.map((slot) => {
-      const opt = slot.options[d[slot.key]];
+    const career = loadCareer();
+    const cycler = (slot) => {
+      const key = this.peek?.slot === slot.key ? this.peek.key : d[slot.key];
+      const opt = slot.options[key];
+      const note = lockNote(slot.key, key, career);
       return `<div class="slot">
         <span class="slot-label">${slot.label}</span>
-        <div class="cycler" data-cycle="${slot.key}" tabindex="0" role="group" aria-label="${slot.label}: ${opt.label}">
+        <div class="cycler ${note ? 'is-locked' : ''}" data-cycle="${slot.key}" tabindex="0" role="group" aria-label="${slot.label}: ${opt.label}${note ? `, locked. ${note}` : ''}">
           <button data-step="-1" tabindex="-1" aria-label="Previous ${slot.label}">‹</button>
-          <span class="cyc-val"><b>${opt.label}</b><small>${opt.blurb}</small></span>
+          <span class="cyc-val"><b>${opt.label}</b>${note ? `<small class="lock-note">${LOCK_ICON}${note}${key === d[slot.key] ? '' : ' · preview'}</small>` : `<small>${opt.blurb}</small>`}</span>
           <button data-step="1" tabindex="-1" aria-label="Next ${slot.label}">›</button>
         </div>
       </div>`;
-    }).join('');
+    };
+    this.k('slots').innerHTML = SLOTS.map(cycler).join('');
+    this.k('looks').innerHTML = LOOK_SLOTS.map(cycler).join('');
     const paints = [['primary', 'Hull'], ['secondary', 'Trim'], ['glow', 'Glow']];
     this.k('paint').innerHTML = paints.map(([key, label]) => `
       <div class="paint-row">
@@ -229,7 +255,7 @@ export class HangarScreen {
   }
 
   renderStats() {
-    const st = computeStats(this.current);
+    const st = computeStats(this.viewDesign());
     const base = this.baseline;
     this.k('stats').innerHTML = `
       <div class="stat-head"><h3>Performance</h3><span>${st.mass.toLocaleString()} kg</span></div>
