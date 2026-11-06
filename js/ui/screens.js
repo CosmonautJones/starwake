@@ -300,6 +300,7 @@ export class Screens {
             <div class="field"><span>Quality</span><div class="seg" data-k="quality">${['low', 'medium', 'high'].map((q) => `<button data-v="${q}" class="${s.quality === q ? 'is-on' : ''}">${q[0].toUpperCase() + q.slice(1)}</button>`).join('')}</div></div>
             <label class="field"><span>Field of view <output data-o="fov">${s.fov}°</output></span><input type="range" min="60" max="90" step="1" data-k="fov" value="${s.fov}"></label>
             <label class="check"><input type="checkbox" data-k="reduceMotion" ${s.reduceMotion ? 'checked' : ''}><span>Reduce motion <small>Calmer camera, no speed streaks or shake</small></span></label>
+            <div class="field"><span>Speed effects</span><div class="seg" data-k="speedEffects">${[['full', 'Full'], ['reduced', 'Reduced'], ['off', 'Off']].map(([v, l]) => `<button data-v="${v}" class="${(s.speedEffects || 'full') === v ? 'is-on' : ''}">${l}</button>`).join('')}</div><small class="field-note">Speed streaks, radial blur, camera shake and FOV kick. Reduce motion caps this at Reduced.</small></div>
             <label class="check"><input type="checkbox" data-k="showFps" ${s.showFps ? 'checked' : ''}><span>Show frame rate</span></label>
             <h3>Assists</h3>
             ${assistSeg('aimAssist', 'Aim assist', s.aimAssist ?? 1, 'Lasers snap onto rivals near the reticle, and missiles lock on automatically.')}
@@ -309,6 +310,8 @@ export class Screens {
             <label class="field"><span>Sensitivity <output data-o="mouseSens">${Math.round((s.mouseSens ?? 1) * 100)}%</output></span><input type="range" min="30" max="250" step="10" data-k="mouseSens" value="${Math.round((s.mouseSens ?? 1) * 100)}"></label>
             <label class="check"><input type="checkbox" data-k="invertY" ${s.invertY ? 'checked' : ''}><span>Invert up and down</span></label>
             <label class="check"><input type="checkbox" data-k="lockMouse" ${s.lockMouse !== false ? 'checked' : ''}><span>Capture the mouse in races <small>Keeps the cursor inside the game. Press Esc to release it.</small></span></label>
+            <h3>Controller</h3>
+            <label class="check"><input type="checkbox" data-k="rumble" ${s.rumble !== false ? 'checked' : ''}><span>Controller rumble</span></label>
           </div>
           <div class="panel controls-ref">
             <h3>Controls</h3>

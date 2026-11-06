@@ -570,6 +570,10 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 
 .hud-vignette { inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 55%, rgba(255, 60, 60, 0.55) 100%); }
 .hud-vignette[data-tone="shield"] { background: radial-gradient(ellipse at center, transparent 60%, rgba(79, 234, 255, 0.4) 100%); }
+/* big boost pad: a warm flash in from the screen edges (the shockwave ring itself is drawn in 3D / the speed pass) */
+.hud-padflash { inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 38%, rgba(255, 190, 80, 0.16) 62%, rgba(255, 160, 50, 0.42) 100%); }
+.hud-padflash.go { animation: pad-flash 0.5s ease-out; }
+@keyframes pad-flash { 0% { opacity: 1; } 100% { opacity: 0; } }
 .hud-hint { left: 50%; bottom: calc(clamp(270px, 35vh, 420px) * 0.655 + 14px); transform: translateX(-50%); font-size: 14px; font-weight: 500; color: #c4ceef; white-space: nowrap; padding: 7px 18px; border-radius: 999px; background: rgba(6, 8, 26, 0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 .hud-hint:empty { display: none; }
 .name-tag { display: none; }

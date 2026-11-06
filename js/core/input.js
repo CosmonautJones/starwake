@@ -305,11 +305,12 @@ export class Input {
     if (!this._raceMode) this._releaseMouse();
   }
 
-  /** { sensitivity = 1, invertY = false }: missing keys keep their value. */
+  /** { sensitivity = 1, invertY = false, rumble = true }: missing keys keep their value. */
   setOptions(o = {}) {
     if (!o) return;
     if (typeof o.sensitivity === 'number' && Number.isFinite(o.sensitivity)) this._sens = clamp(o.sensitivity, 0.05, 10);
     if (o.invertY !== undefined) this._invertY = !!o.invertY;
+    if (o.rumble !== undefined) this._rumbleOff = !o.rumble;
   }
 
   /**
@@ -553,8 +554,9 @@ export class Input {
     };
   }
 
-  /** Dual-rumble on the gamepad in use; silently does nothing if unsupported. */
+  /** Dual-rumble on the gamepad in use; silently does nothing if unsupported or turned off. */
   rumble(intensity, ms) {
+    if (this._rumbleOff) return;
     const mag = clamp(Number(intensity) || 0, 0, 1);
     const dur = clamp(Number(ms) || 0, 0, 5000);
     if (mag <= 0 || dur <= 0) return;

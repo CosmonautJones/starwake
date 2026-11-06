@@ -14,6 +14,7 @@ import { HazardViews } from '../space/hazardViews.js';
 import { BoostPads, BoostPadViews } from './pads.js';
 import { Debris, tunnelBounds } from '../space/debris.js';
 import { SpeedFX } from '../space/speedfx.js';
+import { ScrapeSparks } from '../space/scrapeSparks.js';
 import { SpaceWorld } from './world.js';
 import { ShipSim } from './ship.js';
 import { FlightAI } from './ai.js';
@@ -38,6 +39,7 @@ const LASER_DAMAGE = LASER.damage;
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _x = new THREE.Vector3(), _q = new THREE.Quaternion();
 const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2();
 const FWD = new THREE.Vector3(0, 0, -1);
+const FX_FULL = { streaks: 1, blur: 1, shake: 1, fov: 1 };
 const PICKUP_COLORS = { boost: '#ffb547', missile: '#ff5a6a', shield: '#5ee7ff' };
 const GATE_COLOR = '#ffb547';
 /** Team identities for team play. */
@@ -96,7 +98,9 @@ export class FlightRace {
     });
     this._debrisBounds = this.battle ? null : tunnelBounds(this.course);
     // Speed sensation around the focus ship (streaks, wall sparks, supersonic shock cone).
-    this.speedFx = this.mode === 'attract' ? null : new SpeedFX(this.scene, this.camera, { quality: this.quality, reduceMotion: !!this.settings.reduceMotion });
+    this.speedFx = this.mode === 'attract' ? null : new SpeedFX(this.scene, this.camera, { quality: this.quality, reduceMotion: !!this.settings.reduceMotion, level: this.settings.speedEffects });
+    // Sparks pouring off any ship grinding the tunnel wall (race only).
+    this.scrapeFx = this.battle ? null : new ScrapeSparks(this.scene, { quality: this.quality });
     this.weapons = new WeaponSystem(this.world);
     this.weaponView = new WeaponView(this.scene, this.weapons, { quality: this.quality });
 
@@ -514,7 +518,11 @@ export class FlightRace {
       for (const e of ships) if (e.local && e.connected) local.push(e);
       this.pads.update(dt, local);
       for (const ev of this.pads.events) {
-        if (ev.shipId === this.player?.id) { this.padFlash = { big: ev.big, t: 0 }; this.onEvent({ type: 'boostPad', big: ev.big }); }
+        if (ev.shipId === this.player?.id) {
+          this.padFlash = { big: ev.big, t: 0 };
+          this.onEvent({ type: 'boostPad', big: ev.big });
+          if (this.player === this.focus) this.speedFx?.padHit(ev.big, this.player.sim.pos, this.player.sim.vel);
+        }
       }
       this.pads.events.length = 0;
     }
@@ -841,7 +849,7 @@ export class FlightRace {
           this._killFeed(e, killer, ev.cause);
           this._send('die', { id: e.id, by: ev.by || null, c: ev.cause || null });
         }
-        if (ev.type === 'scrape' && this.tunnel && this._near(ev.point, 600)) this.tunnel.scrape(ev.point, ev.intensity);
+        if (ev.type === 'scrape' && this.tunnel && this._near(ev.point, 600)) { this.tunnel.scrape(ev.point, ev.intensity); this.scrapeFx?.hit(e, ev.point, ev.intensity); }
         if (ev.type === 'dodge') { e.dodgeAnim = { t: 0, dir: ev.dir }; if (isPlayer) this.onEvent({ type: 'dodge', dir: ev.dir }); }
         if (ev.type === 'supersonic' && (isPlayer || this._near(e.sim.pos, 300))) this.onEvent({ type: 'supersonic', player: isPlayer, distance: this._distN(e.sim.pos) });
         if (ev.type === 'deflect') {
@@ -1086,7 +1094,9 @@ export class FlightRace {
     this.weaponView.update(dt);
     this.sparks.update(dt);
     this.shatter.update(dt);
+    this.speedFx?.setLevel(this.settings.speedEffects, !!this.settings.reduceMotion);
     this._updateCamera(dt);
+    this.scrapeFx?.update(dt, this);
     if (this.padViews) this.padViews.update(dt, this.time, this.focus?.id);
     if (this.padFlash) { this.padFlash.t += dt; if (this.padFlash.t > 0.8) this.padFlash = null; }
     if (this.state === 'racing') this._passBys(dt);
@@ -1126,6 +1136,7 @@ export class FlightRace {
     const reduce = this.settings.reduceMotion;
     const baseFov = this.settings.fov || 70;
     if (this._cinematicNow()) { this._cinematic(dt, snap); return; }
+    const fxl = this.speedFx?.levels || FX_FULL; // Settings -> Speed effects
     const e = this.focus, sim = e.sim;
     const speedN = clamp(Math.max(0, sim.forwardSpeed) / sim.p.topSpeed, 0, 1.6);
     const boost = sim.boosting ? 1 : 0;
@@ -1146,17 +1157,17 @@ export class FlightRace {
       cam.position.copy(sim.pos).add(_v.set(0, up, back).applyQuaternion(c.quat));
       if (!reduce && dt > 0 && speedN > 0.6) {
         // Engine rumble: a fine, fast shake that grows with speed (never touches the aim).
-        const r = (speedN - 0.6) * 0.06 + ss * 0.05 + (sim.scraping ? 0.08 : 0);
+        const r = ((speedN - 0.6) * 0.06 + ss * 0.05 + (sim.scraping ? 0.08 : 0)) * fxl.shake;
         cam.position.x += Math.sin(this.time * 61) * r; cam.position.y += Math.sin(this.time * 47 + 1) * r;
       }
     }
     cam.quaternion.copy(c.quat).multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), this.cameraMode === 'hood' ? 0 : -0.07));
     if (this.shake > 0 && dt > 0) {
-      const amp = (reduce ? 0.1 : 0.5) * this.shake;
+      const amp = (reduce ? 0.1 : 0.5) * this.shake * fxl.shake;
       cam.position.x += (Math.random() - 0.5) * amp; cam.position.y += (Math.random() - 0.5) * amp; cam.position.z += (Math.random() - 0.5) * amp;
       this.shake = Math.max(0, this.shake - dt * 2.2);
     }
-    const targetFov = baseFov + (reduce ? 4 : 8) * Math.min(speedN, 1.3) + (reduce ? 2 : 6) * boost + (this.speedFx && e === this.focus ? this.speedFx.fovKick : 0);
+    const targetFov = baseFov + ((reduce ? 4 : 8) * Math.min(speedN, 1.3) + (reduce ? 2 : 6) * boost) * fxl.fov + (this.speedFx && e === this.focus ? this.speedFx.fovKick : 0);
     c.fov = snap ? targetFov : damp(c.fov, targetFov, 2.5, dt);
     cam.fov = c.fov;
     cam.updateProjectionMatrix();
@@ -1259,6 +1270,35 @@ export class FlightRace {
     };
   }
 
+  /** Inputs for the adaptive race music (js/core/feel.js turns them into an intensity). */
+  musicState() {
+    const p = this.player;
+    if (!p) return null;
+    const sim = p.sim;
+    let gap = Infinity;
+    let lastLap = false;
+    if (this.battle) {
+      for (const e of this.entities) {
+        if (e === p || !e.connected || e.sim.dead || (this.teams && e.team === p.team)) continue;
+        gap = Math.min(gap, e.sim.pos.distanceTo(sim.pos));
+      }
+      const top = this.teams ? Math.max(...this.teamScores()) : Math.max(0, ...this.entities.map((e) => e.kills));
+      lastLap = this.state === 'racing' && (this.timeLimit - this.matchTime() < 60 || top >= this.target - 2);
+    } else {
+      const mine = this._progress(p);
+      for (const e of this.entities) {
+        if (e === p || !e.connected || e.sim.dead || e.finishTime != null) continue;
+        gap = Math.min(gap, Math.abs(this._progress(e) - mine) * this.course.length);
+      }
+      lastLap = this.laps > 1 ? sim.lap >= this.laps - 1 : sim.dist / this.course.length > 0.5;
+    }
+    return {
+      state: this.state, battle: this.battle, speedN: clamp(Math.max(0, sim.forwardSpeed) / sim.p.topSpeed, 0, 1.4),
+      boosting: sim.boosting, supersonic: sim.supersonic, rivalGap: gap, rank: p.rank, leading: p.rank === 1 && (!this.battle || p.kills > 0),
+      lastLap: lastLap && !sim.finished, dead: sim.dead, finished: sim.finished,
+    };
+  }
+
   respawnPlayer() {
     if (this.battle) return;
     if (this.player && this.state === 'racing' && !this.player.sim.finished && !this.player.sim.dead) this.player.sim.respawn();
@@ -1297,6 +1337,7 @@ export class FlightRace {
     this.debris?.dispose();
     this.speedFx?.dispose();
     this.padViews?.dispose();
+    this.scrapeFx?.dispose();
     this.hz?.dispose();
     this.belts.forEach((b) => b.dispose());
     this.weaponView.dispose();
