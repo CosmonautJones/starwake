@@ -18,6 +18,9 @@
 //   audio.play('gate');
 //   audio.play('laser', { volume: 0.6, pan: -0.3 });
 //   audio.play('explosion', { size: 0.8, distance: 0.2 });
+//   // adaptive race music (see the Music section):
+//   audio.setRaceMusic({ intensity: 0.7, lastLap: false, supersonic: true, leading: true });
+//   audio.musicCue('countdown', { n: 3 }); audio.musicCue('go'); audio.musicCue('finish', { win: true });
 //
 // If Web Audio is unavailable (or the context cannot be created) every method
 // silently does nothing.
@@ -105,6 +108,10 @@ const KNOWN = new Set([
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const smoothstep = (a, b, x) => {
+  const k = clamp((x - a) / (b - a), 0, 1);
+  return k * k * (3 - 2 * k);
+};
 
 // ---------------------------------------------------------------------------
 // Music material (MIDI note numbers).
@@ -131,7 +138,24 @@ const RACE = {
     [54, 57, 62],
   ],
   roots: [40, 36, 43, 38],
+  // Leader melody, eighths per bar over Em - C - G - D (0 = rest); played an octave up.
+  melody: [
+    [71, 0, 0, 67, 0, 69, 71, 0],
+    [72, 0, 71, 0, 67, 0, 64, 0],
+    [74, 0, 71, 0, 67, 0, 71, 74],
+    [78, 0, 76, 74, 0, 69, 0, 0],
+  ],
 };
+
+/** Adaptive race track layers (each has its own gain; 'kick' bypasses the pump + filter). */
+const LAYERS = ['kick', 'bass', 'pad', 'hats', 'clap', 'arp', 'drive', 'lead', 'melody'];
+const LV_COUNTDOWN = { kick: 1, pad: 1, hats: 1 };
+const LV_OUTRO = { pad: 1, bass: 1, arp: 1 };
+/** Last-lap lead, per 16th: 0-2 = chord tones, 3-4 = the first two an octave up. */
+const LEAD_PAT = [0, 1, 2, 3, 2, 1, 2, 4, 0, 2, 1, 3, 4, 3, 2, 1];
+/** Finish cadence bVI - bVII - I in E: a win lands on E major, otherwise E minor. */
+const STING_WIN = [[60, 64, 67, 72], [62, 66, 69, 74], [64, 68, 71, 76, 83]];
+const STING_LOSE = [[60, 64, 67, 72], [62, 66, 69, 74], [64, 67, 71, 76]];
 
 export class AudioEngine {
   /**
@@ -158,6 +182,11 @@ export class AudioEngine {
     this._grindHold = 0; // play('wallGrind', {level}) hold level
     this._grindAt = -1e9;
     this._offline = false;
+    // Adaptive race music: wanted state (setRaceMusic), phase from cues, last stinger time.
+    this._rm = { intensity: 0.2, lastLap: false, supersonic: false, leading: false };
+    this._rmPhase = 'countdown';
+    this._lv = {};
+    this._stingerMs = -1e9;
     if (opts && opts.context) {
       this.ctx = opts.context;
       this._offline = true;
@@ -963,6 +992,7 @@ export class AudioEngine {
         this._noise({ t, ft: 'bandpass', ff: 3000, ff2: 300, fq: 2, a: 0.02, h: 0.45, r: 0.25, g: 0.05 });
         break;
       case 'finish': {
+        if (nowMs() - this._stingerMs < 1500) break; // the race music is playing its finish cadence
         const n = [523.25, 659.25, 783.99];
         for (let i = 0; i < n.length; i++) this._brass(n[i], t + i * 0.12, 0.16, 0.06, 0.1);
         const tt = t + 0.36;
@@ -1441,6 +1471,20 @@ export class AudioEngine {
 
   // -------------------------------------------------------------------------
   // Music
+  //
+  // MENU is a dreamy loop. RACE is an adaptive 128 bpm E-minor loop made of layers (kick, bass,
+  // pad, hats, clap, arp, offbeat drive stabs, last-lap lead, leader melody), each on its own
+  // gain that follows the race. Race track graph:
+  //   kick layer + cue hits + stingers ----------------------------> out -> musicBus
+  //   every other layer -> pump (sidechain-ish duck) -> lowpass ----^
+  //   (arp / lead / melody also feed the shared echo through tr.send)
+  // Phases: 'countdown' (sparse; a riser into Go) -> 'racing' (layers fade with intensity) ->
+  // 'finish' (cadence stinger) -> 'outro' (calm pad loop until the results switch to MENU).
+  // Structural changes (last-lap key lift + lead, leader melody) land on bar lines, supersonic
+  // (filter sweep + pump) on beats; every change is a gain or filter ramp, never a hard cut.
+  //   audio.setRaceMusic({ intensity: 0..1, lastLap, supersonic, leading })  // a few times a second
+  //   audio.musicCue('intro' | 'countdown' | 'go' | 'finish', { n?: seconds to Go, win?: bool })
+  //   audio.musicDebug()  // -> { track, phase, I, key, levels, ... } for logging
 
   /** 'menu' | 'race' | null. Crossfades between kinds; null fades out. */
   music(kind) {
@@ -1454,6 +1498,115 @@ export class AudioEngine {
       this._current = null;
     }
     if (k) this._startTrack(k);
+  }
+
+  /**
+   * Adaptive race music targets. Cheap: just stores them; the sequencer reads them on its
+   * 16th-note grid (intensity is smoothed there, flags latch on beats / bars).
+   * @param {{intensity?:number, lastLap?:boolean, supersonic?:boolean, leading?:boolean}} s
+   */
+  setRaceMusic(s) {
+    if (!s) return;
+    const r = this._rm;
+    r.intensity = clamp(num(s.intensity, r.intensity), 0, 1);
+    if (s.lastLap !== undefined) r.lastLap = !!s.lastLap;
+    if (s.supersonic !== undefined) r.supersonic = !!s.supersonic;
+    if (s.leading !== undefined) r.leading = !!s.leading;
+  }
+
+  /**
+   * Race music cues.
+   *   'intro'      new race: back to the sparse pre-race groove (restarts a race already playing)
+   *   'countdown'  { n: seconds until Go } arms a riser that peaks on Go (once per countdown)
+   *   'go'         resyncs the grid so bar 1 lands on Go, with an impact hit
+   *   'finish'     { win } a resolved cadence stinger on the next beat, then a calm outro.
+   *                While it is audible, play('finish') is skipped so the two don't clash.
+   */
+  musicCue(cue, o = {}) {
+    const tr = this._current && this._current.kind === 'race' && this._current.L ? this._current : null;
+    const live = !!this.ctx && this._live();
+    const now = this.ctx ? this.ctx.currentTime : 0;
+    switch (cue) {
+      case 'intro':
+        this._rmPhase = 'countdown';
+        this._rm.lastLap = this._rm.supersonic = this._rm.leading = false;
+        this._rm.intensity = 0.2;
+        if (tr && live) this._raceReset(tr, now);
+        return;
+      case 'countdown': {
+        this._rmPhase = 'countdown';
+        if (!tr || !live) return;
+        if (tr.phase !== 'countdown') this._raceReset(tr, now);
+        if (tr.riser) return;
+        tr.riser = true;
+        this._riser(tr, now + 0.02, clamp(num(o && o.n, 3), 0.5, 6));
+        return;
+      }
+      case 'go': {
+        this._rmPhase = 'racing';
+        if (!tr || !live || tr.phase === 'racing') return;
+        const t = now + 0.015;
+        tr.phase = 'racing';
+        tr.phaseAt = t;
+        tr.base = tr.step; // the next step scheduled is bar 1, beat 1 ...
+        tr.next = t; // ... and it lands on Go
+        tr.prog = 0;
+        tr.I = Math.max(tr.I, 0.35);
+        this._impact(tr, t);
+        return;
+      }
+      case 'finish': {
+        if (this._rmPhase === 'finish') return;
+        this._rmPhase = 'finish';
+        if (!tr || !live || tr.phase === 'finish' || tr.phase === 'outro') return;
+        const sx = tr.sixteenth;
+        const beat = sx * 4;
+        const rel = tr.step - tr.base;
+        let tB = tr.next + ((4 - (((rel % 4) + 4) % 4)) % 4) * sx; // next beat not yet scheduled
+        if (tB < now + 0.03) tB += beat;
+        tr.phase = 'finish';
+        tr.finishAt = tB;
+        tr.outroAt = tB + beat * 6;
+        for (const name of LAYERS) {
+          tr.L[name].gain.setTargetAtTime(0, tB, 0.05);
+          // Layers keep playing the few 16ths left before the stinger's beat.
+          tr.offAt[name] = tr.sent[name] > 0.01 || rel < tr.offAt[name] ? Infinity : -1;
+          tr.sent[name] = 0;
+        }
+        tr.pump.gain.cancelScheduledValues(tB);
+        tr.pump.gain.setTargetAtTime(1, tB, 0.05);
+        tr.cut = 1700;
+        tr.lp.frequency.setTargetAtTime(1700, tB + beat * 2, 0.6);
+        tr.lp.Q.setTargetAtTime(0.7, tB, 0.1);
+        this._stinger(tr, tB, !o || o.win !== false);
+        if (this._vol.music > 0.04 && this._vol.master > 0.04) this._stingerMs = nowMs();
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** Snapshot of the music state machine (debug / tests). */
+  musicDebug() {
+    const tr = this._current;
+    const o = { track: tr ? tr.kind : null, phase: this._rmPhase, voices: this._voices, want: { ...this._rm } };
+    if (tr && tr.L) {
+      const lv = {};
+      for (const name of LAYERS) lv[name] = Math.round(tr.sent[name] * 100) / 100;
+      Object.assign(o, {
+        phase: tr.phase,
+        I: Math.round(tr.I * 1000) / 1000,
+        key: tr.key,
+        lastLap: tr.flags.lastLap,
+        leading: tr.flags.leading,
+        supersonic: tr.flags.ss,
+        bar: Math.floor((tr.step - tr.base) / 16),
+        cutoff: Math.round(tr.cut),
+        levels: lv,
+      });
+    }
+    return o;
   }
 
   _startTrack(kind) {
@@ -1476,6 +1629,7 @@ export class AudioEngine {
     tr.send.gain.value = kind === 'race' ? 0.25 : 0.45;
     tr.out.connect(this.musicBus);
     tr.send.connect(this.delay);
+    if (kind === 'race') this._buildRaceTrack(tr, t);
     // Echo locked to a dotted eighth.
     this.delay.delayTime.setTargetAtTime(tr.sixteenth * 3, t, 0.2);
     this._tracks.push(tr);
@@ -1483,11 +1637,101 @@ export class AudioEngine {
     if (!this._timer) this._timer = setInterval(() => this._schedule(), 25);
   }
 
-  _fadeTrack(tr, t) {
-    tr.out.gain.cancelScheduledValues(t);
-    tr.out.gain.setTargetAtTime(0, t, 0.35);
-    tr.send.gain.setTargetAtTime(0, t, 0.35);
-    tr.stopAt = t + 1.6; // stop scheduling new notes once inaudible
+  /** Layer buses, pump and filter for the adaptive race track. */
+  _buildRaceTrack(tr, t) {
+    const ctx = this.ctx;
+    tr.lp = ctx.createBiquadFilter();
+    tr.lp.type = 'lowpass';
+    tr.lp.frequency.value = 1500;
+    tr.lp.Q.value = 0.7;
+    tr.pump = ctx.createGain();
+    tr.pump.connect(tr.lp);
+    tr.lp.connect(tr.out);
+    tr.hits = ctx.createGain(); // kick, cue hits and stingers: not pumped, not filtered
+    tr.hits.connect(tr.out);
+    tr.L = {};
+    tr.sent = {};
+    tr.offAt = {};
+    for (const name of LAYERS) {
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      g.connect(name === 'kick' ? tr.hits : tr.pump);
+      tr.L[name] = g;
+      tr.sent[name] = 0;
+      tr.offAt[name] = -1;
+    }
+    tr.flags = { lastLap: false, leading: false, ss: false };
+    tr.base = 0;
+    tr.prog = 0;
+    tr.cut = -1;
+    // A track started mid-race (audio unlocked late) joins in the right phase.
+    tr.phase = this._rmPhase === 'finish' ? 'outro' : this._rmPhase;
+    tr.phaseAt = t;
+    tr.I = tr.phase === 'racing' ? clamp(this._rm.intensity, 0.2, 1) : 0.2;
+    tr.key = 0;
+    tr.liftBar = -1;
+    tr.riser = false;
+    tr.finishAt = Infinity;
+    tr.outroAt = Infinity;
+    this._raceLevels(tr, t, 0.05, 0);
+  }
+
+  /** Back to the countdown groove (new race / restart). */
+  _raceReset(tr, t) {
+    tr.phase = 'countdown';
+    tr.phaseAt = t;
+    tr.flags.lastLap = tr.flags.leading = tr.flags.ss = false;
+    tr.key = 0;
+    tr.liftBar = -1;
+    tr.riser = false;
+    tr.finishAt = tr.outroAt = Infinity;
+    tr.I = 0.2;
+    tr.cut = -1;
+    for (const name of LAYERS) tr.offAt[name] = -1;
+    tr.lp.Q.setTargetAtTime(0.7, t, 0.1);
+    this._raceLevels(tr, t, 0.3, tr.step - tr.base);
+  }
+
+  /** Ramp every layer (and the filter) toward the levels the current phase / intensity ask for. */
+  _raceLevels(tr, t, tc, rel) {
+    const I = tr.I;
+    const f = tr.flags;
+    let lv;
+    let cut;
+    if (tr.phase === 'countdown') {
+      lv = LV_COUNTDOWN;
+      cut = 1500;
+    } else if (tr.phase === 'outro') {
+      lv = LV_OUTRO;
+      cut = 1700;
+    } else if (tr.phase === 'finish') {
+      return; // the finish cue already faded everything
+    } else {
+      lv = this._lv;
+      lv.kick = 1;
+      lv.bass = 1;
+      lv.pad = 0.95 - 0.35 * I;
+      lv.hats = 0.35 + 0.65 * smoothstep(0.15, 0.4, I);
+      lv.clap = smoothstep(0.22, 0.42, I);
+      lv.arp = f.lastLap ? 1 : smoothstep(0.34, 0.58, I);
+      lv.drive = Math.max(smoothstep(0.6, 0.85, I), f.lastLap ? 0.8 : 0);
+      lv.lead = f.lastLap ? 0.6 + 0.4 * smoothstep(0.3, 0.7, I) : 0;
+      lv.melody = f.leading ? 0.55 + 0.45 * smoothstep(0.25, 0.6, I) : 0;
+      cut = f.ss ? 19000 : Math.min(18000, 2400 + 14000 * Math.pow(I, 1.4) + (f.lastLap ? 2500 : 0));
+    }
+    for (const name of LAYERS) {
+      const v = lv[name] || 0;
+      const was = tr.sent[name];
+      if (Math.abs(v - was) < 0.01) continue;
+      // Keep scheduling a fading layer's notes for 1.5 bars so its tail ramps out smoothly.
+      if (v <= 0.01 && was > 0.01) tr.offAt[name] = rel + 24;
+      tr.sent[name] = v;
+      tr.L[name].gain.setTargetAtTime(v, t, tc);
+    }
+    if (Math.abs(cut - tr.cut) > 40) {
+      tr.cut = cut;
+      tr.lp.frequency.setTargetAtTime(cut, t, f.ss ? 0.12 : 0.5);
+    }
   }
 
   /** Lookahead scheduler: runs every ~25ms, schedules notes ~0.1s ahead. */
@@ -1520,6 +1764,13 @@ export class AudioEngine {
       clearInterval(this._timer);
       this._timer = 0;
     }
+  }
+
+  _fadeTrack(tr, t) {
+    tr.out.gain.cancelScheduledValues(t);
+    tr.out.gain.setTargetAtTime(0, t, 0.35);
+    tr.send.gain.setTargetAtTime(0, t, 0.35);
+    tr.stopAt = t + 1.6; // stop scheduling new notes once inaudible
   }
 
   _retire(tr) {
@@ -1567,50 +1818,230 @@ export class AudioEngine {
     }
   }
 
-  /** Driving race loop: kick, hats, clap, rolling bass, 16th arp, thin pad. */
+  /**
+   * Adaptive race loop, one 16th at a time. Same groove as ever (kick, clap, hats, rolling bass,
+   * 16th arp, thin pad) with layers that come and go, a sparse countdown and a calm outro.
+   */
   _raceStep(tr, step, t) {
+    const sx = tr.sixteenth;
+    const want = this._rm;
+    if (tr.phase === 'countdown' && t - tr.phaseAt > 25) {
+      // No 'go' cue ever came (music started some other way): just race.
+      tr.phase = 'racing';
+      tr.phaseAt = t;
+    }
+    if (tr.phase === 'finish') {
+      if (t < tr.outroAt - 1e-4) {
+        if (t >= tr.finishAt - 1e-4) return; // the stinger owns the stage
+      } else {
+        tr.phase = 'outro';
+        tr.phaseAt = t;
+        tr.base = step;
+        tr.prog = 0;
+        tr.flags.ss = false;
+        for (const name of LAYERS) tr.offAt[name] = -1;
+        this._raceLevels(tr, t, 1.2, 0);
+      }
+    }
+    const phase = tr.phase;
+    const racing = phase === 'racing';
+    const rel = step - tr.base;
+    const s = ((rel % 16) + 16) % 16;
+    const bar = Math.floor(rel / 16);
+    const f = tr.flags;
+    const L = tr.L;
+    const k = tr.key;
+    const on = (name) => tr.sent[name] > 0.01 || rel < tr.offAt[name];
+
+    // Smoothed intensity: rises over ~1 s, settles over ~3 s.
+    if (racing) {
+      const target = want.intensity;
+      tr.I += (target - tr.I) * (target > tr.I ? 0.09 : 0.035);
+    }
+    // Last lap: a half-bar fill, then on the bar line the key lifts a semitone, the chord
+    // progression restarts and the lead + drive come in.
+    if (racing && want.lastLap && !f.lastLap && tr.liftBar < 0) tr.liftBar = s <= 8 ? bar + 1 : bar + 2;
+    if (s === 0) {
+      if (racing && bar === tr.liftBar && !f.lastLap) {
+        f.lastLap = true;
+        tr.key = 1;
+        tr.prog = bar;
+        this._crash(tr, t, 0.12);
+      }
+      f.leading = racing && want.leading;
+    }
+    if (s % 4 === 0 && phase !== 'finish') {
+      const ss = racing && want.supersonic;
+      if (ss && !f.ss) this._ssSweep(tr, t);
+      f.ss = ss;
+      this._raceLevels(tr, t, racing ? 0.3 : 0.5, rel);
+      // Sidechain-ish pump: hard while supersonic, a hint of it at full intensity.
+      const depth = ss ? 0.55 : racing && tr.I > 0.75 ? 0.16 * (tr.I - 0.75) / 0.25 : 0;
+      if (depth > 0.02) {
+        const g = tr.pump.gain;
+        g.setValueAtTime(1, t);
+        g.linearRampToValueAtTime(1 - depth, t + 0.01);
+        g.setTargetAtTime(1, t + 0.012, ss ? 0.09 : 0.06);
+      }
+    }
+
     const def = tr.def;
-    const bar = Math.floor(step / 16);
-    const s = step % 16;
-    const ci = bar % 4;
+    const ci = phase === 'countdown' ? bar & 1 : (((bar - tr.prog) % 4) + 4) % 4;
     const chord = def.chords[ci];
     const root = def.roots[ci];
-    const dest = tr.out;
-    const sx = tr.sixteenth;
+    const barLen = sx * 16;
 
+    if (phase === 'countdown') {
+      // Sparse: tonic pad + sub, a heartbeat kick, ticking hats.
+      if (s === 0) {
+        for (let i = 0; i < chord.length; i++) {
+          this._tone({ f: mtof(chord[i] + k), t, type: 'sawtooth', a: 0.4, h: barLen - 0.4, r: 0.6, g: 0.02, ft: 'lowpass', ff: 900, fq: 0.6, det: i * 7 - 7, dest: L.pad });
+        }
+        this._tone({ f: mtof(root + k), t, type: 'sine', a: 0.2, h: barLen - 0.3, r: 0.4, g: 0.13, dest: L.pad });
+      }
+      if (s === 0 || s === 10) this._tone({ f: 130, f2: 44, sweep: 0.1, t, type: 'sine', a: 0.002, h: 0.03, r: 0.14, g: s === 0 ? 0.32 : 0.18, dest: L.kick });
+      if (s % 4 === 2) this._noise({ t, ft: 'highpass', ff: 9000, a: 0.001, h: 0.004, r: 0.03, g: 0.026, dest: L.hats });
+      return;
+    }
+
+    if (phase === 'outro') {
+      // Calm: long soft pad, a sine bass on the one, a gentle triangle arp.
+      if (s === 0) {
+        for (let i = 0; i < chord.length; i++) {
+          this._tone({ f: mtof(chord[i] + k), t, type: 'sawtooth', a: 0.8, h: barLen - 0.6, r: 1.3, g: 0.018, ft: 'lowpass', ff: 800, ff2: 1300, fq: 0.5, det: i * 6 - 6, dest: L.pad });
+        }
+        this._tone({ f: mtof(root + k), t, type: 'sine', a: 0.3, h: barLen - 0.4, r: 0.7, g: 0.11, dest: L.bass });
+      }
+      if (s % 4 === 2) {
+        const m = chord[(s >> 2) % 3] + 12 + k;
+        this._tone({ f: mtof(m), t, type: 'triangle', a: 0.01, h: 0.04, r: 0.4, g: 0.045, dest: L.arp, send: tr.send });
+      }
+      return;
+    }
+
+    // ---- racing (and the last few 16ths before a finish stinger)
     // Kick: pitched sine drop + tiny noise click.
-    if (s % 4 === 0) {
-      this._tone({ f: 150, f2: 44, sweep: 0.11, t, type: 'sine', a: 0.002, h: 0.04, r: 0.16, g: 0.5, dest });
-      this._noise({ t, ft: 'lowpass', ff: 1800, a: 0.001, h: 0.004, r: 0.02, g: 0.06, dest });
+    if (s % 4 === 0 && on('kick')) {
+      this._tone({ f: 150, f2: 44, sweep: 0.11, t, type: 'sine', a: 0.002, h: 0.04, r: 0.16, g: 0.5, dest: L.kick });
+      this._noise({ t, ft: 'lowpass', ff: 1800, a: 0.001, h: 0.004, r: 0.02, g: 0.06, dest: L.kick });
     }
     // Clap on 2 and 4.
-    if (s === 4 || s === 12) {
-      this._noise({ t, ft: 'bandpass', ff: 1600, fq: 1.2, a: 0.002, h: 0.02, r: 0.12, g: 0.12, dest });
+    if ((s === 4 || s === 12) && on('clap')) {
+      this._noise({ t, ft: 'bandpass', ff: 1600, fq: 1.2, a: 0.002, h: 0.02, r: 0.12, g: 0.12, dest: L.clap });
     }
-    // Hats: open-ish on offbeats, ticks on odd sixteenths.
-    if (s % 4 === 2) this._noise({ t, ft: 'highpass', ff: 7500, a: 0.001, h: 0.015, r: 0.05, g: 0.06, dest });
-    else if (s % 2 === 1) this._noise({ t, ft: 'highpass', ff: 9000, a: 0.001, h: 0.004, r: 0.02, g: 0.028, dest });
-
-    // Rolling bass (skip the kick hits for pump), octave pops.
-    if (s % 4 !== 0) {
-      const m = s % 4 === 3 ? root + 12 : root;
-      this._tone({ f: mtof(m), t, type: 'sawtooth', a: 0.004, h: sx * 0.55, r: 0.06, g: 0.12, ft: 'lowpass', ff: 900, ff2: 260, fq: 3, dest });
+    // Hats: open-ish on offbeats, 16th ticks once the race heats up.
+    if (on('hats')) {
+      if (s % 4 === 2) this._noise({ t, ft: 'highpass', ff: 7500, a: 0.001, h: 0.015, r: 0.05, g: 0.06, dest: L.hats });
+      else if (s % 2 === 1 && (tr.I > 0.45 || f.lastLap)) this._noise({ t, ft: 'highpass', ff: 9000, a: 0.001, h: 0.004, r: 0.02, g: 0.028, dest: L.hats });
     }
-
+    // Rolling bass (skips the kick hits for pump), octave pops.
+    if (s % 4 !== 0 && on('bass')) {
+      const m = (s % 4 === 3 ? root + 12 : root) + k;
+      this._tone({ f: mtof(m), t, type: 'sawtooth', a: 0.004, h: sx * 0.55, r: 0.06, g: 0.12, ft: 'lowpass', ff: 900, ff2: 260, fq: 3, dest: L.bass });
+    }
     // 16th arp, from the second bar onward so the loop builds in.
-    if (bar > 0) {
-      const pat = [0, 1, 2, 3];
-      const idx = pat[s % 4];
+    if ((bar > 0 || f.lastLap) && on('arp')) {
+      const idx = s % 4;
       let m = (idx === 3 ? chord[0] + 12 : chord[idx]) + 12;
-      if (bar % 8 >= 4 && (s >> 2) % 2 === 1) m += 12;
-      this._tone({ f: mtof(m), t, type: 'square', a: 0.003, h: 0.03, r: 0.08, g: 0.028, ft: 'lowpass', ff: 2400, fq: 1, dest, send: tr.send });
+      if ((bar - tr.prog) % 8 >= 4 && (s >> 2) % 2 === 1) m += 12;
+      this._tone({ f: mtof(m + k), t, type: 'square', a: 0.003, h: 0.03, r: 0.08, g: 0.028, ft: 'lowpass', ff: 2400, fq: 1, dest: L.arp, send: tr.send });
     }
-
-    // Thin pad for width.
-    if (s === 0) {
-      const barLen = sx * 16;
+    // Drive: offbeat chord stabs (trance pump) at high intensity and on the last lap.
+    if (s % 4 === 2 && on('drive')) {
       for (let i = 0; i < chord.length; i++) {
-        this._tone({ f: mtof(chord[i]), t, type: 'sawtooth', a: 0.3, h: barLen - 0.3, r: 0.4, g: 0.014, ft: 'lowpass', ff: 1400, fq: 0.5, dest, det: i * 6 - 6 });
+        this._tone({ f: mtof(chord[i] + 12 + k), t, type: 'sawtooth', a: 0.003, h: sx * 0.9, r: 0.07, g: 0.016, ft: 'lowpass', ff: 3200, ff2: 900, fq: 2, det: i * 5 - 5, dest: L.drive });
+      }
+    }
+    // Last-lap lead: a bright 16th arpeggio two octaves up, into the echo.
+    if (on('lead')) {
+      const tones = LEAD_PAT[s];
+      const m = (tones < 3 ? chord[tones] : chord[tones - 3] + 12) + 24 + k;
+      this._tone({ f: mtof(m), t, type: 'square', a: 0.002, h: 0.025, r: 0.07, g: 0.02, ft: 'lowpass', ff: 3800, fq: 1.5, dest: L.lead, send: tr.send });
+    }
+    // Leader melody: a simple hook over the progression, only while you're in front.
+    if (s % 2 === 0 && on('melody')) {
+      const n = def.melody[ci][s >> 1];
+      if (n) {
+        const fq = mtof(n + 12 + k);
+        this._tone({ f: fq, t, type: 'triangle', a: 0.01, h: sx * 1.4, r: 0.18, g: 0.045, dest: L.melody, send: tr.send });
+        this._tone({ f: fq * 2, t, type: 'sine', a: 0.01, h: sx, r: 0.12, g: 0.01, dest: L.melody });
+      }
+    }
+    // Thin pad for width.
+    if (s === 0 && on('pad')) {
+      for (let i = 0; i < chord.length; i++) {
+        this._tone({ f: mtof(chord[i] + k), t, type: 'sawtooth', a: 0.3, h: barLen - 0.3, r: 0.4, g: 0.014, ft: 'lowpass', ff: 1400, fq: 0.5, dest: L.pad, det: i * 6 - 6 });
+      }
+    }
+    // Fill into the last-lap lift: a snare roll that builds over the last half bar + a riser.
+    if (racing && tr.liftBar >= 0 && !f.lastLap && bar === tr.liftBar - 1 && s >= 8) {
+      const x = (s - 8) / 7;
+      this._noise({ t, ft: 'bandpass', ff: 1700 + 1500 * x, fq: 1.3, a: 0.001, h: 0.012, r: 0.06, g: 0.035 + 0.09 * x, dest: tr.hits });
+      if (s === 8) this._noise({ t, ft: 'bandpass', ff: 400, ff2: 8000, fq: 1.5, a: sx * 8, h: 0.005, r: 0.04, g: 0.06, dest: tr.hits });
+    }
+  }
+
+  /** Supersonic entry: resonant filter sweep open (the cutoff itself ramps in _raceLevels) + a whoosh. */
+  _ssSweep(tr, t) {
+    const q = tr.lp.Q;
+    q.setTargetAtTime(5, t, 0.04);
+    q.setTargetAtTime(0.7, t + 0.45, 0.3);
+    this._noise({ t, ft: 'bandpass', ff: 500, ff2: 9000, fq: 2, a: 0.32, h: 0.02, r: 0.25, g: 0.045, dest: tr.hits });
+  }
+
+  _crash(tr, t, g) {
+    this._noise({ t, ft: 'highpass', ff: 4500, ff2: 7000, a: 0.001, h: 0.03, r: 1.4, g, dest: tr.hits });
+    this._noise({ t, ft: 'bandpass', ff: 3200, fq: 0.8, a: 0.001, h: 0.01, r: 0.5, g: g * 0.5, dest: tr.hits });
+  }
+
+  /** Countdown riser: filtered noise + a saw sweeping up to E5, peaking on Go. */
+  _riser(tr, t, dur) {
+    this._noise({ t, ft: 'bandpass', ff: 350, ff2: 7000, fq: 1.6, a: dur, h: 0.01, r: 0.06, g: 0.08, dest: tr.hits });
+    this._tone({ f: mtof(40), f2: mtof(76), sweep: dur, t, type: 'sawtooth', a: dur, h: 0.01, r: 0.06, g: 0.03, ft: 'lowpass', ff: 500, ff2: 5200, fq: 2, dest: tr.hits });
+  }
+
+  /** Go: a big kick, a sub drop and a crash on the downbeat of bar 1. */
+  _impact(tr, t) {
+    this._tone({ f: 160, f2: 40, sweep: 0.16, t, type: 'sine', a: 0.002, h: 0.05, r: 0.3, g: 0.6, dest: tr.hits });
+    this._tone({ f: 70, f2: 30, sweep: 0.8, t, type: 'sine', a: 0.005, h: 0.1, r: 0.9, g: 0.22, dest: tr.hits });
+    this._crash(tr, t, 0.13);
+  }
+
+  /**
+   * Finish cadence on the beat grid: bVI - bVII - I. A win resolves to E major (Picardy third)
+   * with a sparkle run; otherwise it settles on E minor. Transposed with the last-lap lift.
+   */
+  _stinger(tr, t, win) {
+    const beat = tr.sixteenth * 4;
+    const k = tr.key;
+    const dest = tr.hits;
+    const chords = win ? STING_WIN : STING_LOSE;
+    const bass = [36, 38, 40];
+    const g0 = win ? 0.05 : 0.038;
+    for (let i = 0; i < 3; i++) {
+      const ti = t + i * beat;
+      const last = i === 2;
+      const h = last ? beat * 2.6 : beat * 0.8;
+      const r = last ? 1.6 : 0.14;
+      const ch = chords[i];
+      for (let j = 0; j < ch.length; j++) {
+        this._tone({ f: mtof(ch[j] + k), t: ti, type: 'sawtooth', a: 0.012, h, r, g: g0, ft: 'lowpass', ff: last ? 4200 : 3400, ff2: 1100, fq: 1.1, det: j % 2 ? 7 : -7, dest, send: last ? tr.send : undefined });
+      }
+      this._tone({ f: mtof(bass[i] + k), t: ti, type: 'sine', a: 0.005, h, r: last ? 1.2 : 0.1, g: 0.2, dest });
+      this._tone({ f: mtof(bass[i] + 12 + k), t: ti, type: 'sawtooth', a: 0.005, h: h * 0.9, r: 0.1, g: 0.035, ft: 'lowpass', ff: 900, dest });
+      this._tone({ f: 150, f2: 44, sweep: 0.11, t: ti, type: 'sine', a: 0.002, h: 0.04, r: last ? 0.3 : 0.16, g: last ? 0.62 : 0.5, dest });
+      if (i === 0 || last) this._crash(tr, ti, last ? 0.12 : 0.08);
+    }
+    const tl = t + 2 * beat;
+    if (win) {
+      const run = [76, 80, 83, 88, 92];
+      for (let i = 0; i < run.length; i++) {
+        this._tone({ f: mtof(run[i] + k), t: tl + tr.sixteenth * (1 + i), type: 'triangle', a: 0.003, h: 0.04, r: i === run.length - 1 ? 0.9 : 0.25, g: 0.05, dest, send: tr.send });
+      }
+    } else {
+      const run = [83, 79, 76];
+      for (let i = 0; i < run.length; i++) {
+        this._tone({ f: mtof(run[i] + k), t: tl + beat * 0.5 * (1 + i), type: 'triangle', a: 0.01, h: 0.08, r: i === 2 ? 0.9 : 0.3, g: 0.04, dest, send: tr.send });
       }
     }
   }

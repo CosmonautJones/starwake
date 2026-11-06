@@ -122,6 +122,7 @@ export class Hud {
       <div class="hud" data-state="intro" data-game="${race.game}"${reduce ? ' data-reduce-motion="1"' : ''}>
         <canvas class="hud-overlay" aria-hidden="true"></canvas>
         <div class="hud-vignette" data-k="vignette"></div>
+        <div class="hud-padflash" data-k="padFlash" aria-hidden="true"></div>
         ${vitals()}
         <div class="hud-tl">
           <div class="hud-pos"><b data-k="rank">1</b><small data-k="suffix">st</small><em>/ <span data-k="total">1</span></em></div>
@@ -342,6 +343,7 @@ export class Hud {
         this.el.boostPulse.classList.toggle('big', !!pad.big);
         this._kick(this.el.boostPulse, 'go');
         this._kick(this.hudEl.querySelector('.hud-gauge'), pad.big ? 'pad-big' : 'pad');
+        if (pad.big) this._kick(this.el.padFlash, 'go');
       }
       this.lastPad = pad.t;
     } else this.lastPad = null;

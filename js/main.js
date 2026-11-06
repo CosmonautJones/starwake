@@ -12,6 +12,7 @@ import { storage } from './core/storage.js';
 import { loadCareer, recordRun, RunTracker } from './core/career.js';
 import { AudioEngine } from './core/audio.js';
 import { Input } from './core/input.js';
+import { RaceFeel } from './core/feel.js';
 import { mulberry32, randomId, $ } from './core/util.js';
 import { randomDesign, normalizeDesign } from './craft/parts.js';
 import { COURSES, getCourseDef } from './flight/courseDefs.js';
@@ -43,7 +44,8 @@ class App {
     this._initRenderer();
     this.audio = new AudioEngine();
     this.input = new Input(window);
-    this.input.setOptions({ sensitivity: this.settings.mouseSens, invertY: this.settings.invertY });
+    this.input.setOptions({ sensitivity: this.settings.mouseSens, invertY: this.settings.invertY, rumble: this.settings.rumble !== false });
+    this.feel = new RaceFeel(this); // adaptive race music + rumble cues
     this.input.onAnyInput(() => { this.audio.unlock(); this.audio.music(this.race && this.race.mode !== 'attract' ? 'race' : 'menu'); });
     this.applyAudioSettings();
 
@@ -137,7 +139,7 @@ class App {
     storage.saveSettings(this.settings);
     this.applyAudioSettings();
     if (patch.quality && patch.quality !== prevQuality) this.applyQuality();
-    if ('mouseSens' in patch || 'invertY' in patch) this.input.setOptions({ sensitivity: this.settings.mouseSens, invertY: this.settings.invertY });
+    if ('mouseSens' in patch || 'invertY' in patch || 'rumble' in patch) this.input.setOptions({ sensitivity: this.settings.mouseSens, invertY: this.settings.invertY, rumble: this.settings.rumble !== false });
     this.fpsEl.hidden = !this.settings.showFps;
     if (this.race) Object.assign(this.race.settings, this.settings);
   }
@@ -303,6 +305,7 @@ class App {
     const hud = this.hud;
     const a = this.audio;
     this.run?.event(e);
+    this.feel.event(e);
     switch (e.type) {
       case 'countdown': a.play('countdown'); hud?.center(String(e.n), 'count'); break;
       case 'go': a.play('go'); hud?.center('Go', 'go'); hud?.hint(''); break;
@@ -463,6 +466,7 @@ class App {
       }
       if (live && this.hud) this.hud.update(rawDt, this.race.hud());
       this.audio.setEngine(live && !this.race.results ? this.race.audioState() : { active: false, speedN: 0, throttle: 0, boost: false });
+      this.feel.frame(rawDt);
       this.render();
     } catch (err) {
       console.error(err);

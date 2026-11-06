@@ -20,8 +20,16 @@
 //  - Near miss: streak burst + a brief edge flash / aberration kick in the pass.
 //  - Speed pass: radial zoom blur toward the edges + slight chromatic aberration, strength
 //    from speed/boost/supersonic; centre stays sharp.
+//  - Boost pads: padHit(big, pos, vel). A big pad fires an amber shockwave ring on screen (speed
+//    pass) and round the ship (3D), a warm edge flash, a gold spark burst and a short FOV punch;
+//    a small pad is a subtle tick (tiny FOV nudge + a few sparks).
 // reduceMotion: fewer/dimmer streaks, a quarter of the blur, no aberration or boom ripple,
 // no FOV kick or shake.
+// Speed effects level (settings.speedEffects): 'full' | 'reduced' | 'off' scales streak density,
+// radial blur, camera shake and FOV kick (SPEED_LEVELS; read the live factors from `levels`).
+// Reduce motion caps it at 'reduced'. setLevel(level, reduceMotion) applies a change live.
+// Streaks, blur and fovKick are scaled here; `shake` is not (the camera owner multiplies all of
+// its shake by levels.shake).
 
 import * as THREE from 'three';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
@@ -38,6 +46,19 @@ const C_SPARK0 = new THREE.Color(1.0, 0.72, 0.36);
 const C_SPARK1 = new THREE.Color(1.0, 0.3, 0.06);
 const C_SHOCK = new THREE.Color(0.75, 0.9, 1.0);
 const C_BOOST = new THREE.Color(1.0, 0.85, 0.65);
+
+/** Per-level factors for the speed effects setting. */
+export const SPEED_LEVELS = {
+  full: { streaks: 1, blur: 1, shake: 1, fov: 1 },
+  reduced: { streaks: 0.5, blur: 0.45, shake: 0.35, fov: 0.45 },
+  off: { streaks: 0, blur: 0, shake: 0, fov: 0 },
+};
+/** Effective level name: unknown -> 'full'; reduce motion caps it at 'reduced'. */
+export function speedLevel(level, reduceMotion = false) {
+  const k = SPEED_LEVELS[level] ? level : 'full';
+  return reduceMotion && k === 'full' ? 'reduced' : k;
+}
+const C_PAD = new THREE.Color(1.0, 0.72, 0.28);
 
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 function randUnit(r, out) {
@@ -162,10 +183,11 @@ export class SpeedFX {
   /**
    * @param {THREE.Scene} scene
    * @param {THREE.PerspectiveCamera} camera
-   * @param {{quality?:'high'|'medium'|'low', reduceMotion?:boolean, color?:string, wallColor?:string, topSpeed?:number}} o
+   * @param {{quality?:'high'|'medium'|'low', reduceMotion?:boolean, level?:'full'|'reduced'|'off', color?:string, wallColor?:string, topSpeed?:number}} o
    *   topSpeed: m/s that speedN 1 maps to when no `velocity` is given (default 130).
+   *   level: the speed effects setting (default 'full').
    */
-  constructor(scene, camera, { quality = 'high', reduceMotion = false, color = '#cfe4ff', wallColor = '#ffc27a', topSpeed = 130 } = {}) {
+  constructor(scene, camera, { quality = 'high', reduceMotion = false, level = 'full', color = '#cfe4ff', wallColor = '#ffc27a', topSpeed = 130 } = {}) {
     this.scene = scene;
     this.camera = camera;
     this.q = QUALITY[quality] || QUALITY.high;
@@ -182,6 +204,7 @@ export class SpeedFX {
     this.fovKick = 0;        // extra degrees the caller may add to camera.fov
     this.shake = 0;          // extra shake (same units as FlightRace.shake) the caller may add
     this._fovImp = 0;
+    this._pad = { t: -1, amt: 0, c: new THREE.Vector2(0.5, 0.5) };
 
     // ---- streaks
     const n = this.q.streaks;
@@ -245,7 +268,18 @@ export class SpeedFX {
       this.booms.push({ mesh, mat, u, t: 1, life: 0.9, r0: 3, r1: 70, vel: new THREE.Vector3() });
     }
     this._boomGeo = boomGeo;
+    this.setLevel(level, reduceMotion);
     if (typeof window !== 'undefined') this.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  /** Apply the speed effects setting (cheap; safe to call every frame). */
+  setLevel(level, reduceMotion = this.reduceMotion) {
+    const k = speedLevel(level, reduceMotion);
+    if (k === this.level && !!reduceMotion === this.reduceMotion) return;
+    this.level = k;
+    this.reduceMotion = !!reduceMotion;
+    this.levels = SPEED_LEVELS[k];
+    this._streakGeo.instanceCount = Math.round(this.q.streaks * this.levels.streaks);
   }
 
   /** Viewport size in CSS pixels (streak width is in pixels). Call on resize. */
@@ -260,6 +294,7 @@ export class SpeedFX {
     let b = this.booms[0];
     for (const x of this.booms) if (x.t > b.t) b = x;
     b.t = 0; b.life = 0.85; b.r0 = 2.5; b.r1 = rm ? 35 : 75 * strength; b.strength = (rm ? 0.5 : 1) * strength;
+    b.u.uColor.value.setRGB(0.85, 0.95, 1.0);
     b.mesh.position.copy(pos);
     if (dir && dir.lengthSq() > 1e-6) { _v.copy(dir).normalize(); b.mesh.quaternion.setFromUnitVectors(_v2.set(0, 0, 1), _v); }
     b.vel.copy(velocity || _v.set(0, 0, 0)).multiplyScalar(0.94);   // the shock front rides with the ship, then falls behind
@@ -287,11 +322,71 @@ export class SpeedFX {
       setCol3(o, C_SHOCK, 2.2, C_SHOCK, 0.6);
       this.add.spawn(o);
     }
-    if (!rm) { this._fovImp = Math.max(this._fovImp, 9 * strength); this.shake = Math.max(this.shake, 0.6 * strength); }
+    if (!rm) { this._fovImp = Math.max(this._fovImp, 9 * strength * this.levels.fov); this.shake = Math.max(this.shake, 0.6 * strength); }
     // screen-space ripple centre
     const cam = this.camera;
     _v.copy(pos).project(cam);
     if (_v.z < 1) { this._boom.c.set(_v.x * 0.5 + 0.5, _v.y * 0.5 + 0.5); this._boom.t = 0; }
+  }
+
+  /**
+   * The player took a boost pad. Big: amber shockwave ring (screen + 3D), warm edge flash,
+   * gold spark burst and a short FOV punch. Small: a subtle tick.
+   * @param {boolean} big
+   * @param {THREE.Vector3} [pos] ship position
+   * @param {THREE.Vector3} [velocity] ship velocity
+   */
+  padHit(big, pos = null, velocity = null) {
+    const rm = this.reduceMotion, F = this.levels, o = this._spec, r = this._r;
+    const vx = velocity ? velocity.x : 0, vy = velocity ? velocity.y : 0, vz = velocity ? velocity.z : 0;
+    if (!big) {
+      this._fovImp = Math.max(this._fovImp, 1.4 * F.fov);
+      if (pos && this.enabled) {
+        for (let i = 0; i < 6; i++) {
+          resetSpec(o); randUnit(r, _v3);
+          o.shape = 3; o.px = pos.x; o.py = pos.y; o.pz = pos.z;
+          o.vx = vx * 0.8 + _v3.x * 14; o.vy = vy * 0.8 + _v3.y * 14; o.vz = vz * 0.8 + _v3.z * 14;
+          o.drag = 3; o.life = 0.25; o.s0 = o.s1 = 0.07; o.fadePow = 1.2; o.alpha = 0.8;
+          setCol3(o, C_PAD, 2.4, C_PAD, 0.8);
+          this.add.spawn(o);
+        }
+      }
+      return;
+    }
+    this._fovImp = Math.max(this._fovImp, 6 * F.fov);
+    if (!rm) this.shake = Math.max(this.shake, 0.25);
+    this._pad.t = 0;
+    this._pad.amt = rm ? 0.4 : 1;
+    this._pad.c.set(0.5, 0.5);
+    if (pos) {
+      _v.copy(pos).project(this.camera);
+      if (_v.z < 1) this._pad.c.set(Math.min(0.9, Math.max(0.1, _v.x * 0.5 + 0.5)), Math.min(0.9, Math.max(0.1, _v.y * 0.5 + 0.5)));
+    }
+    if (!pos || !this.enabled) return;
+    // 3D ring round the ship, facing the direction of travel (shares the boom pool)
+    let b = this.booms[0];
+    for (const x of this.booms) if (x.t > b.t) b = x;
+    b.t = 0; b.life = 0.6; b.r0 = 2; b.r1 = rm ? 16 : 30; b.strength = rm ? 0.6 : 1.3;
+    b.u.uColor.value.copy(C_PAD).multiplyScalar(1.6);
+    b.mesh.position.copy(pos);
+    if (velocity && velocity.lengthSq() > 1e-6) { _v.copy(velocity).normalize(); b.mesh.quaternion.setFromUnitVectors(_v2.set(0, 0, 1), _v); }
+    b.vel.copy(velocity || _v.set(0, 0, 0)).multiplyScalar(0.97);
+    b.mesh.visible = true;
+    // hot flash at the ship + a gold spark burst
+    resetSpec(o); o.shape = 1; o.px = pos.x; o.py = pos.y; o.pz = pos.z;
+    o.vx = vx * 0.98; o.vy = vy * 0.98; o.vz = vz * 0.98;
+    o.life = 0.22; o.s0 = 4; o.s1 = 11; o.fadePow = 2.2; o.alpha = rm ? 0.35 : 0.75;
+    setCol3(o, C_PAD, 2.2, C_PAD, 0.6);
+    this.add.spawn(o);
+    for (let i = 0; i < (rm ? 10 : 28); i++) {
+      resetSpec(o); randUnit(r, _v3);
+      o.shape = 3; o.px = pos.x + _v3.x * 1.5; o.py = pos.y + _v3.y * 1.5; o.pz = pos.z + _v3.z * 1.5;
+      const sp = 18 + r() * 30;
+      o.vx = vx * 0.7 + _v3.x * sp; o.vy = vy * 0.7 + _v3.y * sp; o.vz = vz * 0.7 + _v3.z * sp;
+      o.drag = 2.2; o.life = 0.3 + r() * 0.35; o.s0 = o.s1 = 0.1; o.streak = 0.05; o.fadePow = 1.2; o.alpha = 0.95;
+      setCol3(o, C_PAD, 3.0, C_SPARK1, 0.9);
+      this.add.spawn(o);
+    }
   }
 
   /**
@@ -337,6 +432,7 @@ export class SpeedFX {
     const spd = smooth(0.25, 1.0, speedN);
     let a = Math.min(0.75, spd * 0.42 + this._boost * 0.2 + this._ss * 0.1) + this._nm * 0.45;
     if (rm) a *= 0.35;
+    a *= this.levels.streaks > 0 ? 0.6 + 0.4 * this.levels.streaks : 0;
     this._alpha += (a - this._alpha) * k;
     const su = this.su;
     su.uAlpha.value = this.enabled ? this._alpha : 0;
@@ -368,7 +464,7 @@ export class SpeedFX {
       su.uWallAng.value = Math.atan2(c2, c1);
       su.uWallR.value = Math.max(2.5, Math.min(40, rad));
     }
-    su.uWallA.value = this._wall * (rm ? 0.5 : 1.25);
+    su.uWallA.value = this._wall * (rm ? 0.5 : 1.25) * (this.levels.streaks > 0 ? 1 : 0);
 
     // ---- wall spray sparks
     this._sparks(dt, s, vel, speed, wallIn, rm);
@@ -419,7 +515,7 @@ export class SpeedFX {
     // ---- camera punch outputs
     this._fovImp *= Math.exp(-dt * 3.5);
     this.shake *= Math.exp(-dt * 4);
-    this.fovKick = rm ? 0 : this._fovImp + this._nm * 3 + this._ss * 4;
+    this.fovKick = rm ? 0 : this._fovImp + (this._nm * 3 + this._ss * 4) * this.levels.fov;
     if (rm) this.shake = 0;
 
     // ---- pass
@@ -482,11 +578,16 @@ export class SpeedFX {
 
   _drivePass(dt, speedN, vel, speed, rm) {
     const u = this.pass.uniforms, cam = this.camera;
-    let str = smooth(0.55, 1.15, speedN) * 0.45 + this._boost * 0.25 + this._ss * 0.45 + this._nm * 0.3;
+    // Supersonic used to add +0.45 (pinning the blur at 1); it now adds a little on top of the
+    // boost blur, so full-speed supersonic sits ~25% under the old strength.
+    const F = this.levels;
+    let str = smooth(0.55, 1.15, speedN) * 0.45 + this._boost * 0.25 + this._ss * 0.06 + this._nm * 0.3;
     if (rm) str *= 0.25;
+    str *= F.blur;
     if (!this.enabled) str = 0;
     u.uStrength.value += (Math.min(1, str) - u.uStrength.value) * (1 - Math.exp(-dt * 6));
-    u.uAberr.value = rm ? 0 : 0.003 + this._ss * 0.003;
+    u.uAberr.value = rm ? 0 : (0.003 + this._ss * 0.0024) * Math.min(1, F.blur * 1.5);
+    u.uBoomAmp.value = 0.022 * (F.blur > 0 ? Math.max(0.5, F.blur) : 0);
     u.uFlash.value = rm ? this._nm * 0.3 : this._nm;
     u.uAspect.value = cam.aspect || 1.7778;
     // focus of expansion = where we're heading on screen
@@ -505,7 +606,12 @@ export class SpeedFX {
     }
     u.uBoomT.value = b.t;
     u.uBoomC.value.copy(b.c);
-    this.pass.enabled = u.uStrength.value > 0.004 || u.uFlash.value > 0.004 || b.t >= 0;
+    const pad = this._pad;
+    if (pad.t >= 0) { pad.t += dt / 0.55; if (pad.t >= 1) pad.t = -1; }
+    u.uPadT.value = this.enabled ? pad.t : -1;
+    u.uPadAmt.value = pad.amt;
+    u.uPadC.value.copy(pad.c);
+    this.pass.enabled = u.uStrength.value > 0.004 || u.uFlash.value > 0.004 || b.t >= 0 || u.uPadT.value >= 0;
   }
 
   /** Live draw calls + triangles (for the perf HUD). */
@@ -545,15 +651,19 @@ const SpeedShader = {
     uBoomT: { value: -1 },
     uBoomC: { value: new THREE.Vector2(0.5, 0.5) },
     uBoomAmp: { value: 0.022 },
+    uPadT: { value: -1 },
+    uPadAmt: { value: 1 },
+    uPadC: { value: new THREE.Vector2(0.5, 0.5) },
+    uPadColor: { value: new THREE.Color(1.0, 0.68, 0.26) },
   },
   vertexShader: /* glsl */`
 varying vec2 vUv;
 void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */`
 uniform sampler2D tDiffuse;
-uniform float uStrength, uAberr, uFlash, uAspect, uBoomT, uBoomAmp;
-uniform vec3 uFlashColor;
-uniform vec2 uCenter, uBoomC;
+uniform float uStrength, uAberr, uFlash, uAspect, uBoomT, uBoomAmp, uPadT, uPadAmt;
+uniform vec3 uFlashColor, uPadColor;
+uniform vec2 uCenter, uBoomC, uPadC;
 varying vec2 vUv;
 void main(){
   vec2 uv = vUv;
@@ -567,6 +677,16 @@ void main(){
     float x = (r - R) / w;
     float k = x * exp(-x * x) * (1.0 - uBoomT) * uBoomAmp;
     uv -= (d / max(r, 1e-4)) / asp * k;
+  }
+  // big boost pad: an amber shockwave racing out from the ship (a ripple + a bright ring)
+  float padRing = 0.0;
+  if (uPadT >= 0.0) {
+    vec2 pd = (vUv - uPadC) * asp;
+    float pr = length(pd);
+    float px = (pr - (0.03 + uPadT * 1.25)) / (0.022 + 0.05 * uPadT);
+    float pf = pow(1.0 - uPadT, 1.6) * uPadAmt;
+    padRing = exp(-px * px) * pf;
+    uv -= (pd / max(pr, 1e-4)) / asp * px * exp(-px * px) * pf * 0.012;
   }
   vec2 d = uv - uCenter;
   float rr = length(d * asp);
@@ -593,12 +713,17 @@ void main(){
   }
   // near miss: brief cold flash at the screen edges
   col += uFlashColor * uFlash * smoothstep(0.45, 1.1, rr) * 0.3;
+  if (uPadT >= 0.0) {
+    float re = length((vUv - 0.5) * asp);
+    col += uPadColor * (padRing * 0.85 + pow(1.0 - uPadT, 5.0) * uPadAmt * 0.32 * smoothstep(0.12, 1.0, re));
+  }
   gl_FragColor = vec4(col, base.a);
 }`,
 };
 
 /**
- * Radial zoom blur + edge chromatic aberration + sonic-boom ripple + near-miss edge flash.
+ * Radial zoom blur + edge chromatic aberration + sonic-boom ripple + near-miss edge flash +
+ * boost-pad shockwave (uPadT -1 off / 0..1, uPadC, uPadAmt).
  * Insert after the RenderPass and before UnrealBloomPass (HDR in, HDR out). Starts disabled;
  * SpeedFX.attachPass(pass) drives `uniforms` and `enabled`. Uniforms: uStrength 0..1,
  * uCenter (uv of the focus of expansion), uAberr, uFlash 0..1, uBoomT (-1 off, 0..1), uBoomC.
