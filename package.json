@@ -7,7 +7,7 @@
     "start": "node server/server.mjs",
     "check": "node tools/check-courses.mjs",
     "sim": "node tools/flight-sim.mjs",
-    "test": "node tools/check-courses.mjs && node tools/flight-sim.mjs normal 1 && node tools/assist-sim.mjs && node tools/battle-sim.mjs normal 120 && node tools/test-net.mjs"
+    "test": "node tools/check-courses.mjs && node tools/flight-sim.mjs normal 1 && node tools/assist-sim.mjs && node tools/battle-sim.mjs normal 120 && node tools/replay-sim.mjs && node tools/test-net.mjs"
   },
   "keywords": [],
   "author": "",

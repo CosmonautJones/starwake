@@ -27,6 +27,8 @@ import { Trail, Sparks } from '../world/fx.js';
 import { buildCraft } from '../craft/craftMesh.js';
 import { computeStats } from '../craft/parts.js';
 import { clamp, damp, hashString, mulberry32 } from '../core/util.js';
+import { ReplayDirector } from './replay.js';
+import { GhostRun } from '../space/ghostView.js';
 
 const FIXED_DT = 1 / 120;
 const COUNTDOWN = 3;
@@ -34,6 +36,7 @@ const INTRO = 2.4;
 const NET_SEND_INTERVAL = 0.05;
 const INTERP_DELAY = 110;
 const LASER_DAMAGE = LASER.damage;
+const HIT_STOP = 0.35, HIT_STOP_SCALE = 0.35; // solo only: a beat of slow time when you demolish someone
 
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _x = new THREE.Vector3(), _q = new THREE.Quaternion();
 const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2();
@@ -142,6 +145,12 @@ export class FlightRace {
     this.incoming = false;
     this.lastRingIdx = -1;
     this.standings = [...this.entities];
+
+    // Replays (finish replay, highlights) for real matches; a ghost of your best run in solo races.
+    this.replays = this.mode === 'attract' ? null : new ReplayDirector(this);
+    this.ghostRun = this.mode === 'solo' && !this.battle && this.player
+      ? new GhostRun(this.scene, { saved: o.ghost || null, courseId: this.def.id, laps: this.laps, design: this.player.design }) : null;
+    this.hitStop = 0;
 
     if (this.net) this._bindNet();
     this._updateRingStates(true);
@@ -410,6 +419,7 @@ export class FlightRace {
   // ---------------------------------------------------------------- update
   /** @param {object} input poll() result from Input (null in attract mode) */
   update(dt, input, render = true) {
+    if (this.hitStop > 0 && !this.paused) { this.hitStop -= dt; dt *= HIT_STOP_SCALE; }
     this.time += dt;
     if (this.paused && this.mode !== 'multi') { if (render) this._render(dt); return; }
 
@@ -444,6 +454,8 @@ export class FlightRace {
     while (this.acc >= FIXED_DT) {
       this.acc -= FIXED_DT;
       this._step(FIXED_DT, racing, input);
+      this.replays?.step(FIXED_DT, racing);
+      if (racing) this.ghostRun?.step(FIXED_DT, this.player);
     }
 
     for (const e of this.entities) if (e.kind === 'remote') this._applyRemote(e);
@@ -451,6 +463,7 @@ export class FlightRace {
     this._rank();
     this._netTick(dt);
     this._checkFinish(dt);
+    this.replays?.update(dt);
     this._updateRingStates();
     if (this.hitMarker > 0) this.hitMarker -= dt;
     this.killFeed = this.killFeed.filter((k) => (k.t -= dt) > 0);
@@ -720,6 +733,7 @@ export class FlightRace {
     }
     if (!hit) return;
     this._nmLast = hit; this._nmCd = 0.9; this.nearMissT = 0;
+    if (sim.supersonic) this.replays?.mark('nearMiss');
     sim.boost = Math.min(1, sim.boost + 0.06);
     this.onEvent({ type: 'nearMiss' });
   }
@@ -881,6 +895,7 @@ export class FlightRace {
     this.onEvent({ type: 'explosion', size: 1, ship: true, distance: this._distN(e.sim.pos) });
     if (e === this.focus) this.shake = Math.max(this.shake, 0.9);
     e.trails.forEach((t) => t.trail.reset());
+    this.replays?.explosion(e);
   }
 
   _killFeed(victim, killer, cause = null) {
@@ -894,6 +909,10 @@ export class FlightRace {
     this.killFeed = this.killFeed.slice(0, 4);
     if (killer === this.player && victim !== this.player) this.onEvent({ type: 'kill', name: victim.name, demo: cause === 'demo' });
     if (cause === 'demo' && (killer === this.player || victim === this.player || this._near(victim.sim.pos, 300))) this.onEvent({ type: 'demolition', distance: this._distN(victim.sim.pos) });
+    if (cause === 'demo') {
+      this.replays?.demolition(killer, victim);
+      if (killer === this.player && victim !== this.player && this.mode === 'solo' && !this.settings.reduceMotion) this.hitStop = HIT_STOP;
+    }
   }
 
   _shotSound(e) {
@@ -1023,7 +1042,9 @@ export class FlightRace {
   _showResults(results) {
     if (this.results) return;
     this.results = results;
-    this.onEvent({ type: 'results', results, playerId: this.player?.id, game: this.game, teams: this.teams ? this.teamScores() : null });
+    const ev = { type: 'results', results, playerId: this.player?.id, game: this.game, teams: this.teams ? this.teamScores() : null };
+    // A finish replay still playing holds the results screen back until it ends (or is skipped).
+    if (this.replays) this.replays.afterPlay(() => this.onEvent(ev)); else this.onEvent(ev);
   }
 
   // ---------------------------------------------------------------- rendering
@@ -1042,6 +1063,7 @@ export class FlightRace {
       if (k >= 1) e.dodgeAnim = null;
     }
     root.quaternion.copy(sim.quat).multiply(_q.setFromAxisAngle(_v.set(0, 0, 1), roll));
+    e.visRoll = roll; // the replay buffer records it
     root.visible = e.connected && !sim.dead && !(e === this.player && this.cameraMode === 'hood' && this.state !== 'intro' && !this._cinematicNow());
     if (sim.ghost > 0 && Math.floor(this.time * 12) % 2 === 0) root.visible = false;
   }
@@ -1049,6 +1071,7 @@ export class FlightRace {
   _render(dt) {
     for (const e of this.entities) {
       this._placeMesh(e, dt);
+      if (this.replays?.place(e)) { for (const t of e.trails) t.trail.mesh.visible = false; continue; }
       const sim = e.sim;
       const speedN = clamp(Math.abs(sim.forwardSpeed) / sim.p.topSpeed, 0, 1.5);
       const thrust = this.state === 'intro' || this.state === 'countdown' ? 0.3 + (e.input.throttle || 0) * 0.4 : Math.max(e.input.throttle || 0, speedN * 0.7);
@@ -1067,6 +1090,7 @@ export class FlightRace {
         t.trail.push(_w, _x, 0.3 + speedN * 0.3 + (sim.boosting ? 0.4 : 0));
       }
     }
+    this.ghostRun?.render(dt, this.time, this.camera.position, !!this.replays?.playing);
     // Items: damage flash and respawn grow-in.
     for (const [id, v] of this.itemViews) {
       if (v.grow < 1) { v.grow = Math.min(1, v.grow + dt * 1.5); const it = this.world.byId.get(id); v.obj.scale.setScalar(it.scale * (0.2 + 0.8 * v.grow)); }
@@ -1110,7 +1134,7 @@ export class FlightRace {
       });
       this.shake = Math.max(this.shake, this.speedFx.shake);
     }
-    if (this.tunnel) this.tunnel.update(dt, this.camera, { shipPos: this.focus?.sim.pos || null, speed: Math.max(0, this.focus?.sim.forwardSpeed || 0) });
+    if (this.tunnel) this.tunnel.update(dt, this.camera, { shipPos: this.replays?.focusPos() || this.focus?.sim.pos || null, speed: Math.max(0, this.focus?.sim.forwardSpeed || 0) });
     this.explosions.update(dt, this.camera);
     this.hzViews?.update(dt, this.camera);
     if (this.dust) this.dust.update(dt, this.camera.position, this.focus?.sim.vel || _v.set(0, 0, 0));
@@ -1125,6 +1149,7 @@ export class FlightRace {
     const cam = this.camera, c = this.cam;
     const reduce = this.settings.reduceMotion;
     const baseFov = this.settings.fov || 70;
+    if (this.replays?.playing) { this.replays.camera(cam); return; }
     if (this._cinematicNow()) { this._cinematic(dt, snap); return; }
     const e = this.focus, sim = e.sim;
     const speedN = clamp(Math.max(0, sim.forwardSpeed) / sim.p.topSpeed, 0, 1.6);
@@ -1230,6 +1255,7 @@ export class FlightRace {
       supersonic: sim.supersonic, boostPad: this.padFlash, demos: this.demos, dodgeReady: sim.dodgeCd <= 0,
       nearMiss: this.nearMissT < 1.2 ? this.nearMissT : null,
       lock: this.lock, hitMarker: this.hitMarker > 0, killFeed: this.killFeed,
+      replay: this.replays?.hudState() ?? null,
       standings: this.standings.map((e) => ({ id: e.id, name: e.name, color: e.team != null ? TEAMS[e.team].color : e.design.colors.glow, team: e.team, isPlayer: e === p, finished: e.finishTime != null, connected: e.connected, dead: e.sim.dead, kills: e.kills, deaths: e.deaths })),
     };
     if (this.battle) {
@@ -1246,6 +1272,7 @@ export class FlightRace {
       lapTime: sim.started ? this.raceTime - sim.lapStart : 0, bestLap: p.bestLap, lastLap: sim.lapTimes[sim.lapTimes.length - 1] ?? null,
       lapFrac: sim.finished ? 1 : clamp(sim.dist / L - sim.lap, 0, 1),
       streak: sim.streak, wrongWay: sim.wrongWay > 0.8 && !sim.dead, wall: sim.wall, scraping: sim.scraping > 0,
+      ghostDelta: this.ghostRun?.delta(sim) ?? null,
     });
   }
 
@@ -1298,6 +1325,8 @@ export class FlightRace {
     this.speedFx?.dispose();
     this.padViews?.dispose();
     this.hz?.dispose();
+    this.replays?.dispose();
+    this.ghostRun?.dispose();
     this.belts.forEach((b) => b.dispose());
     this.weaponView.dispose();
     this.sparks.dispose(); this.shatter.dispose(); this.explosions.dispose(); this.dust?.dispose();
