@@ -1,0 +1,20 @@
+# Render blueprint for the Starwake multiplayer relay.
+# Render dashboard: New > Blueprint, pick this repo, Apply. See server/server.mjs for every env var.
+services:
+  - type: web
+    name: starwake-relay
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # Only the relay; the game itself is hosted elsewhere (set to 0 to also serve the game here).
+      - key: RELAY_ONLY
+        value: "1"
+      # Pages allowed to open a relay socket. Pages served by the relay itself are always allowed.
+      - key: ALLOWED_ORIGINS
+        value: https://travisjohnjones.com,https://www.travisjohnjones.com,localhost,127.0.0.1

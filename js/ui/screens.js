@@ -3,7 +3,9 @@
 // (spatial focus), keyboard users with Tab/Enter/Escape.
 
 import { escapeHtml, formatTime, ordinal, $, $$ } from '../core/util.js';
-import { storage } from '../core/storage.js';
+import { storage, DEFAULT_SETTINGS } from '../core/storage.js';
+import { isLocalRelayUrl } from '../net/transport.js';
+import { resolveRelayUrl, servedByRelay, normalizeRelayUrl, warmRelay, inviteLink } from '../net/online.js';
 import { COURSES as TRACKS, getCourseDef as getTrackDef } from '../flight/courseDefs.js';
 import { ARENAS, getArenaDef } from '../flight/arenaDefs.js';
 import { BODIES, randomDesign, normalizeDesign } from '../craft/parts.js';
@@ -465,9 +467,19 @@ export class Screens {
   }
 
   // ================================================================ multiplayer
-  lobbyEntry({ error } = {}) {
+  /** Which relay "Online" would use right now: { url, source } (url null = not set up here). */
+  onlineRelay(setting = this.app.settings.relayUrl) {
+    return resolveRelayUrl({ setting, search: location.search, location, served: servedByRelay() });
+  }
+
+  /**
+   * @param {{error?: string, code?: string, invite?: {code: string, kind: 'tabs'|'relay'}}} props
+   * `invite` comes from an ?join=CODE link: join that room straight away (after a name).
+   */
+  lobbyEntry({ error, code: prefill = '', invite = null } = {}) {
     const app = this.app;
     const s = app.settings;
+    const kind0 = invite ? invite.kind : s.netKind === 'relay' ? 'relay' : 'tabs';
     const el = html(`
       <section class="screen lobby-entry">
         <header class="screen-head"><button class="back" data-act="back" data-sound="back">Back</button><h2>Multiplayer</h2></header>
@@ -476,76 +488,118 @@ export class Screens {
             <label class="field"><span>Pilot name</span><input data-k="name" maxlength="16" value="${escapeHtml(s.playerName)}" autocomplete="off" spellcheck="false"></label>
             <fieldset class="field net-kind">
               <legend>Connection</legend>
-              <label class="radio"><input type="radio" name="kind" value="tabs" ${s.netKind !== 'relay' ? 'checked' : ''}><span><b>This browser</b><small>Races between Starwake tabs or windows open on this computer. Works anywhere, no server needed.</small></span></label>
-              <label class="radio"><input type="radio" name="kind" value="relay" ${s.netKind === 'relay' ? 'checked' : ''}><span><b>Relay server</b><small>Race other computers through the bundled relay (<code>npm start</code>). Share the server address with friends on your network.</small></span></label>
-              <input data-k="relay" class="relay-url" placeholder="ws://localhost:8080/relay" value="${escapeHtml(s.relayUrl || '')}" spellcheck="false" autocomplete="off" aria-label="Relay server address">
+              <label class="radio"><input type="radio" name="kind" value="tabs" ${kind0 === 'tabs' ? 'checked' : ''}><span><b>This browser</b><small>Race between Starwake tabs or windows on this computer. No server needed.</small></span></label>
+              <label class="radio"><input type="radio" name="kind" value="relay" ${kind0 === 'relay' ? 'checked' : ''}><span><b>Online</b><small data-k="onlineNote"></small></span></label>
+              <label class="field relay-url" data-k="relayField"><span>Server <small>(optional)</small></span><input data-k="relay" value="${escapeHtml(s.relayUrl || '')}" spellcheck="false" autocomplete="off" aria-label="Online server address"></label>
             </fieldset>
           </div>
           <div class="panel">
             <h3>Host</h3>
             <p class="note">Create a lobby, pick a race or a battle, and invite others with the room code.</p>
-            <button class="primary" data-act="host" autofocus>Host a lobby</button>
+            <button class="primary" data-act="host" ${invite ? '' : 'autofocus'}>Host a lobby</button>
             <h3>Join</h3>
-            <div class="join-row"><input data-k="code" maxlength="4" placeholder="Code" aria-label="Room code" autocomplete="off" spellcheck="false"><button data-act="join">Join</button></div>
+            <div class="join-row"><input data-k="code" maxlength="4" placeholder="Code" aria-label="Room code" autocomplete="off" spellcheck="false" value="${escapeHtml(invite?.code || prefill || '')}"><button data-act="join">Join</button></div>
             <p class="status" data-k="status" role="status">${error ? escapeHtml(error) : ''}</p>
           </div>
         </div>
       </section>`);
     const status = $('[data-k=status]', el);
+    if (error) status.dataset.tone = 'bad';
     const relayInput = $('[data-k=relay]', el);
+    const nameInput = $('[data-k=name]', el);
+    const kindNow = () => $('input[name=kind]:checked', el).value;
+    const syncOnline = () => {
+      const typed = relayInput.value.trim();
+      const r = this.onlineRelay(typed);
+      const auto = this.onlineRelay('');
+      relayInput.placeholder = auto.url || 'wss://relay.example.com/relay';
+      $('[data-k=onlineNote]', el).textContent = !r.url
+        ? "Online play isn't set up on this site."
+        : r.source === 'local'
+          ? 'Race other computers through a relay server. Run one with npm start.'
+          : 'Race friends anywhere. Share the room code or an invite link.';
+      if (kindNow() === 'relay' && r.url && !isLocalRelayUrl(r.url) && r.source !== 'same-origin') warmRelay(r.url);
+      return r;
+    };
     const syncKind = () => {
-      const kind = $('input[name=kind]:checked', el).value;
-      relayInput.hidden = kind !== 'relay';
+      const kind = kindNow();
+      $('[data-k=relayField]', el).hidden = kind !== 'relay';
       app.saveSettings({ netKind: kind });
+      syncOnline();
     };
     syncKind();
     el.addEventListener('change', (e) => { if (e.target.name === 'kind') syncKind(); });
+    relayInput.addEventListener('change', syncOnline);
     const codeInput = $('[data-k=code]', el);
     codeInput.addEventListener('input', () => { codeInput.value = codeInput.value.toUpperCase().replace(/[^A-Z]/g, ''); });
     codeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') go('join'); });
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && invite) go('join'); });
+    const bad = (text) => { status.textContent = text; status.dataset.tone = 'bad'; app.audio.play('error'); };
     let busy = false;
     const go = async (act) => {
       if (busy) return;
-      const name = $('[data-k=name]', el).value.trim().slice(0, 16) || 'Pilot';
-      app.saveSettings({ playerName: name, relayUrl: relayInput.value.trim() });
+      const name = nameInput.value.trim().slice(0, 16) || 'Pilot';
+      const typed = relayInput.value.trim();
+      app.saveSettings({ playerName: name, relayUrl: typed });
       const code = codeInput.value.trim();
-      if (act === 'join' && code.length !== 4) { status.textContent = 'Enter the 4-letter room code from the host.'; status.dataset.tone = 'bad'; app.audio.play('error'); return; }
+      if (act === 'join' && code.length !== 4) return bad('Enter the 4-letter room code from the host.');
+      if (kindNow() === 'relay') {
+        if (typed && !normalizeRelayUrl(typed)) return bad("That server address doesn't look right. It should look like wss://relay.example.com/relay.");
+        if (!syncOnline().url) return bad("Online play isn't set up on this site. Use This browser, or enter a server address.");
+      }
       busy = true;
       status.dataset.tone = '';
       status.textContent = act === 'host' ? 'Opening a lobby…' : `Looking for room ${code}…`;
-      $$('button', el).forEach((b) => (b.disabled = true));
+      $$('button:not([data-act=back])', el).forEach((b) => (b.disabled = true));
+      // A relay on a free host can be asleep; say so instead of looking stuck.
+      const slow = setTimeout(() => { status.textContent = 'Waking up the online server. This can take up to a minute.'; }, 5000);
       try {
         await this.openNet(act, code);
+        clearTimeout(slow);
+        busy = false;
+        if (this.current?.el !== el) return; // left this screen while connecting
         app.audio.play('join');
         this.show('lobby');
       } catch (err) {
+        clearTimeout(slow);
+        busy = false;
         this.leaveNet();
-        status.textContent = err.message || String(err);
-        status.dataset.tone = 'bad';
-        app.audio.play('error');
+        if (this.current?.el !== el) return;
+        bad(err.message || String(err));
         $$('button', el).forEach((b) => (b.disabled = false));
       }
-      busy = false;
     };
+    const back = () => { this.leaveNet(); this.show('title'); };
     el.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
-      if (act === 'back') this.show('title');
+      if (act === 'back') back();
       if (act === 'host' || act === 'join') go(act);
     });
-    return { el, onBack: () => this.show('title') };
+    if (invite) {
+      // Invite link: join right away if we already know who this is, else ask for a name first.
+      const named = s.playerName && s.playerName !== DEFAULT_SETTINGS.playerName;
+      if (named) queueMicrotask(() => go('join'));
+      else {
+        status.textContent = `You're invited to room ${invite.code}. Enter your pilot name, then press Join.`;
+        queueMicrotask(() => { nameInput.focus({ preventScroll: true }); nameInput.select(); });
+      }
+    }
+    return { el, onBack: back };
   }
 
   async openNet(act, code) {
     const app = this.app;
     const { NetSession } = await import('../net/session.js');
-    const { defaultRelayUrl } = await import('../net/transport.js');
     const s = app.settings;
+    const kind = s.netKind === 'relay' ? 'relay' : 'tabs';
+    const relay = kind === 'relay' ? this.onlineRelay() : { url: null, source: null };
     const net = new NetSession({
-      kind: s.netKind === 'relay' ? 'relay' : 'tabs',
-      relayUrl: s.relayUrl || defaultRelayUrl(location),
+      kind,
+      relayUrl: relay.url || undefined,
       name: s.playerName,
       design: app.playerDesign(),
     });
+    net.relaySource = relay.source;
     this.bindNet(net);
     app.net = net;
     if (act === 'host') await net.host({ trackId: s.trackId, laps: s.laps, aiFill: Math.min(4, s.aiCount), game: 'race', target: s.battleTarget, timeLimit: s.battleTime, hazards: s.hazards ?? 0.6 });
@@ -566,13 +620,18 @@ export class Screens {
         app.backToAttract().then(() => this.show('lobby'));
       }
     });
+    net.addEventListener('ping', () => { if (this.currentName === 'lobby' && app.net === net) this.current.refresh?.(); });
     net.addEventListener('peer-left', (e) => { app.toast(`${e.detail.name || 'A pilot'} left`); app.audio.play('leave'); });
     net.addEventListener('closed', (e) => {
       if (app.net !== net) return;
       app.net = null;
-      app.toast(e.detail.reason || 'Disconnected', 'error');
+      const reason = e.detail.reason || 'Disconnected.';
+      app.toast(reason, 'error');
       app.audio.play('error');
-      app.backToAttract().then(() => this.show('lobbyEntry', { error: e.detail.reason }));
+      // Back to the menu from anywhere (lobby, loading, race, results). A client keeps the
+      // room code filled in, so trying again is one press of Join.
+      const code = net.isHost || /host left/i.test(reason) ? '' : net.code || '';
+      app.backToAttract().then(() => this.show('lobbyEntry', { error: code ? `${reason} Press Join to try again.` : reason, code }));
     });
     net.addEventListener('error', (e) => app.toast(e.detail.message, 'error'));
   }
@@ -594,8 +653,10 @@ export class Screens {
           <div class="panel lobby-code">
             <span>Room code</span>
             <strong data-k="code"></strong>
-            <button data-act="copy">Copy code</button>
+            <div class="row lobby-copy"><button data-act="copy">Copy code</button><button data-act="invite">Copy invite link</button></div>
+            <input class="invite-url" data-k="inviteUrl" readonly hidden aria-label="Invite link">
             <p class="note" data-k="how"></p>
+            <p class="note net-quality" data-k="quality" hidden></p>
           </div>
           <div class="panel lobby-players">
             <h3>Pilots <small data-k="count"></small></h3>
@@ -614,10 +675,20 @@ export class Screens {
       </section>`);
     const k = (name) => $(`[data-k=${name}]`, el);
     k('how').textContent = net.kind === 'relay'
-      ? 'Friends connect to the same relay server, choose Join and enter this code.'
+      ? 'Send friends the invite link, or have them choose Multiplayer, then Online, and join with this code.'
       : 'Open Starwake in another tab or window of this browser, choose Multiplayer → Join and enter this code.';
+    const online = net.kind === 'relay';
+    const pingText = (ms) => (ms == null ? '' : `${ms} ms`);
+    const quality = () => {
+      if (!online) return;
+      const mine = net.isHost ? net.transport.rtt : net.pings[net.selfId];
+      k('quality').hidden = mine == null;
+      k('quality').textContent = mine == null ? '' : `Connection: ${mine} ms to ${net.isHost ? 'the server' : 'the host'}${mine > 250 ? ', expect some lag' : ''}`;
+    };
+    const qualityTimer = online ? setInterval(quality, 2000) : null;
     const refresh = (lobby = net.lobby) => {
       if (!lobby) return;
+      quality();
       k('code').textContent = lobby.code;
       k('count').textContent = `${lobby.players.length} of 8`;
       const active = document.activeElement?.dataset?.act || document.activeElement?.dataset?.k;
@@ -626,7 +697,7 @@ export class Screens {
         return `<li style="--c:${d.colors.glow}">
           <span class="swatch"></span>
           <span class="pname">${escapeHtml(p.name)}${p.id === net.selfId ? ' <small>you</small>' : ''}</span>
-          <span class="pcraft">${escapeHtml(d.name)} · ${BODIES[d.body].label}</span>
+          <span class="pcraft">${escapeHtml(d.name)} · ${BODIES[d.body].label}${online && !p.isHost && net.pings[p.id] != null ? ` · <span class="pping">${pingText(net.pings[p.id])}</span>` : ''}</span>
           <span class="pstate ${p.isHost ? 'host' : p.ready ? 'ready' : ''}">${p.isHost ? 'Host' : p.ready ? 'Ready' : 'Not ready'}</span>
         </li>`;
       }).join('') + (lobby.aiFill ? `<li class="ai-fill"><span class="swatch"></span><span class="pname">${lobby.aiFill} AI pilot${lobby.aiFill > 1 ? 's' : ''}</span><span class="pcraft">fill the grid</span><span class="pstate">AI</span></li>` : '');
@@ -690,6 +761,14 @@ export class Screens {
       if (act === 'copy') {
         navigator.clipboard?.writeText(net.lobby.code).then(() => app.toast('Room code copied'), () => app.toast(`Room code: ${net.lobby.code}`));
       }
+      if (act === 'invite') {
+        const link = inviteLink({ location, code: net.lobby.code, kind: net.kind, relay: net.relaySource === 'param' ? net.relayUrl : null });
+        const box = k('inviteUrl');
+        box.value = link;
+        const showBox = () => { box.hidden = false; box.focus(); box.select(); app.toast('Copy the invite link below'); };
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(link).then(() => { box.hidden = true; app.toast('Invite link copied'); }, showBox);
+        else showBox();
+      }
       if (act === 'ready') {
         const me = net.lobby.players.find((p) => p.id === net.selfId);
         net.setReady(!me?.ready);
@@ -700,7 +779,7 @@ export class Screens {
     // Keep our profile current (craft may have changed in the hangar).
     net.updateProfile({ name: app.settings.playerName, design: app.playerDesign() });
     refresh();
-    return { el, refresh, onBack: () => { this.leaveNet(); this.show('lobbyEntry'); } };
+    return { el, refresh, onBack: () => { this.leaveNet(); this.show('lobbyEntry'); }, unmount: () => clearInterval(qualityTimer) };
   }
 
   hostStart() {

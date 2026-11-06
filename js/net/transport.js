@@ -18,6 +18,20 @@
 const HEARTBEAT_MS = 1000;
 const PEER_TIMEOUT_MS = 20000; // generous: a closed tab says 'bye'; silence only means a crash or a long freeze (loading a match on a slow machine)
 const CONNECT_TIMEOUT_MS = 4000;
+// A relay on a free host (Render, Fly) may be asleep and take most of a minute to wake.
+const REMOTE_CONNECT_TIMEOUT_MS = 60000;
+const RELAY_PING_MS = 5000;
+const RELAY_SILENCE_MS = 20000; // no pong for this long (after the first one) = the connection is dead
+
+/** True for ws://localhost-style URLs, where a missing relay fails fast and `npm start` is the fix. */
+export function isLocalRelayUrl(url) {
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    return h === 'localhost' || h.endsWith('.localhost') || h === '127.0.0.1' || h === '[::1]' || h === '::1';
+  } catch {
+    return false;
+  }
+}
 
 // CustomEvent exists in browsers and Node 19+; fall back to Event + .detail just in case.
 const DetailEvent = typeof CustomEvent === 'function'
@@ -170,25 +184,34 @@ export class BroadcastTransport extends Transport {
 
 /**
  * Wire format (see server/server.mjs):
- *   client -> relay : { msg, to? }
- *   relay -> client : { from, msg } | { sys:'peers', peers:[...] } | { sys:'joined', peer } | { sys:'left', peer }
+ *   client -> relay : { msg, to? } | { sys:'ping', n }
+ *   relay -> client : { from, msg } | { sys:'peers', peers:[...] } | { sys:'joined', peer } | { sys:'left', peer } | { sys:'pong', n }
  * open() resolves once the relay has confirmed the join with its 'peers' list.
  */
 export class WsTransport extends Transport {
-  constructor(relayUrl) {
+  /** @param {string} relayUrl @param {{connectTimeoutMs?: number, pingMs?: number, silenceMs?: number}} [opts] */
+  constructor(relayUrl, opts = {}) {
     super();
     this.relayUrl = relayUrl || 'ws://localhost:8080/relay';
+    this.connectTimeoutMs = opts.connectTimeoutMs ?? (isLocalRelayUrl(this.relayUrl) ? CONNECT_TIMEOUT_MS : REMOTE_CONNECT_TIMEOUT_MS);
+    this.pingMs = opts.pingMs ?? RELAY_PING_MS;
+    this.silenceMs = opts.silenceMs ?? RELAY_SILENCE_MS;
+    /** Round trip to the relay in ms, once measured (null before, or with an older relay). */
+    this.rtt = null;
     this._ws = null;
     this._closing = false;
     this._peers = new Set();
     this._abortOpen = null;
+    this._pingTimer = null;
   }
 
   open(room) {
     if (this._ws) return Promise.reject(new Error('Transport is already open.'));
     this.room = room;
     this._closing = false;
-    const unreachable = `Couldn't reach the relay server at ${this.relayUrl}. Start it with \`npm start\`, or pick 'This browser' mode.`;
+    const unreachable = isLocalRelayUrl(this.relayUrl)
+      ? `Couldn't reach the relay server at ${this.relayUrl}. Start it with \`npm start\`, or pick 'This browser' mode.`
+      : `Couldn't reach the online server at ${this.relayUrl}. Check your connection and try again.`;
 
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -218,7 +241,7 @@ export class WsTransport extends Transport {
         return;
       }
       this._ws = ws;
-      timer = setTimeout(() => fail(unreachable), CONNECT_TIMEOUT_MS);
+      timer = setTimeout(() => fail(unreachable), this.connectTimeoutMs);
 
       ws.onmessage = (e) => {
         let data;
@@ -229,6 +252,7 @@ export class WsTransport extends Transport {
           clearTimeout(timer);
           this._abortOpen = null;
           this.isOpen = true;
+          this._startPing();
           resolve();
         }
         this._onRelay(data);
@@ -239,14 +263,12 @@ export class WsTransport extends Transport {
       };
       ws.onclose = (e) => {
         if (!settled) {
-          if (e.code === 4001) fail('That race is full (8 players max).');
-          else if (e.code === 4002) fail('Connection rejected by the relay (duplicate player id). Try again.');
-          else fail(unreachable);
+          fail(closeReason(e.code, false) || unreachable);
           return;
         }
         const wasOpen = this.isOpen;
         this._detach(ws);
-        if (wasOpen && !this._closing) this._emit('closed', { reason: 'Lost connection to the relay server.' });
+        if (wasOpen && !this._closing) this._emit('closed', { reason: closeReason(e.code, true) });
       };
     });
   }
@@ -267,7 +289,45 @@ export class WsTransport extends Transport {
     try { ws.close(1000, 'bye'); } catch { /* already closing */ }
   }
 
+  /** App-level ping through the relay: measures `rtt`, and notices a dead connection that
+   *  the browser hasn't (Wi-Fi gone, laptop slept). Only enforced once the relay has answered
+   *  a ping, so an older relay without pong support keeps working. */
+  _startPing() {
+    clearInterval(this._pingTimer);
+    let seq = 0;
+    let lastTick = Date.now();
+    this._pongAt = 0;
+    this._pingSent = null;
+    const tick = () => {
+      const ws = this._ws;
+      if (!ws || !this.isOpen) return;
+      const t = Date.now();
+      // If this tab stalled (loading a match, throttled in the background), don't blame the network.
+      if (t - lastTick > this.pingMs * 2.5 && this._pongAt) this._pongAt = t;
+      lastTick = t;
+      if (this._pongAt && t - this._pongAt > this.silenceMs) {
+        this._detach(ws);
+        try { ws.close(); } catch { /* ignore */ }
+        if (!this._closing) this._emit('closed', { reason: 'Lost connection to the relay server.' });
+        return;
+      }
+      seq++;
+      this._pingSent = { n: seq, t };
+      try { ws.send(JSON.stringify({ sys: 'ping', n: seq })); } catch { /* close follows */ }
+    };
+    this._pingTimer = setInterval(tick, this.pingMs);
+    tick();
+  }
+
+  _onPong(n) {
+    const sent = this._pingSent;
+    this._pongAt = Date.now();
+    if (sent && sent.n === n) this.rtt = Math.max(0, this._pongAt - sent.t);
+  }
+
   _detach(ws) {
+    clearInterval(this._pingTimer);
+    this._pingTimer = null;
     if (ws) { ws.onmessage = ws.onerror = ws.onclose = null; }
     if (ws && ws.readyState === 0 /* CONNECTING */) {
       // Closing a CONNECTING socket is allowed; it just aborts the handshake.
@@ -300,6 +360,9 @@ export class WsTransport extends Transport {
           this._emit('peer-left', { peerId: data.peer });
         }
         return;
+      case 'pong':
+        this._onPong(data.n);
+        return;
       case undefined:
         if (typeof data.from === 'string' && data.from !== this.selfId && 'msg' in data) {
           this._emit('message', { from: data.from, msg: data.msg });
@@ -308,6 +371,20 @@ export class WsTransport extends Transport {
       default:
         // Unknown system message from a newer relay: ignore.
     }
+  }
+}
+
+/** What a relay close code means for the player. `afterOpen` = the socket was in a room. */
+export function closeReason(code, afterOpen) {
+  switch (code) {
+    case 4001: return 'That race is full (8 players max).';
+    case 4002: return 'Connection rejected by the relay (duplicate player id). Try again.';
+    case 4003: return "This online server doesn't accept games from this site.";
+    case 4004: return 'The online server is busy. Try again in a minute.';
+    case 4008: return 'The online server disconnected you for sending too much data.';
+    case 1009: return 'The online server disconnected you (a message was too big).';
+    case 1001: return afterOpen ? 'The online server restarted. Host or join again.' : null;
+    default: return afterOpen ? 'Lost connection to the relay server.' : null;
   }
 }
 
