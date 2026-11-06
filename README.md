@@ -13,7 +13,7 @@ npm start       # serves the game and the multiplayer relay
 
 Open the address it prints (default http://localhost:8080). `PORT=9000 npm start` changes the port.
 
-Any static file server also works (`npx serve .`, `python3 -m http.server`). Single-player and same-browser multiplayer run fine that way; only relay multiplayer needs `npm start`. Opening `index.html` straight from disk (`file://`) won't work, because browsers block ES modules there.
+Any static file server also works (`npx serve .`, `python3 -m http.server`). Single-player and same-browser multiplayer run fine that way; online multiplayer needs `npm start` or a hosted relay (see Hosting the relay). Opening `index.html` straight from disk (`file://`) won't work, because browsers block ES modules there.
 
 You need a browser with WebGL 2: current Chrome, Edge, Firefox or Safari with hardware acceleration on.
 
