@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starwake Hazard Gallery</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: #cfd8e6; }
+    canvas { display: block; }
+    #panel { position: fixed; left: 10px; top: 10px; background: rgba(8, 12, 20, 0.72); border: 1px solid rgba(160, 190, 230, 0.18); border-radius: 6px; padding: 8px 10px; max-width: 420px; }
+    #panel.hidden { display: none; }
+    #panel b { color: #fff; }
+    #panel button { background: #142033; color: #d8e6ff; border: 1px solid #2a3f60; border-radius: 4px; padding: 3px 7px; margin: 2px 1px; cursor: pointer; font: inherit; }
+    #panel button:hover { background: #1d2f4a; }
+    #stats { margin-top: 6px; opacity: 0.8; white-space: pre; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+        "three": "../vendor/three/three.module.js",
+        "three/addons/": "../vendor/three/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <div id="panel">
+    <div><b>Starwake hazard gallery</b> — plasmoids and the Vesk</div>
+    <div id="scenes"></div>
+    <div>H hide panel · Space pause</div>
+    <div id="stats"></div>
+  </div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+    import { SpaceSky } from '../js/space/sky.js';
+    import { Tunnel } from '../js/space/tunnel.js';
+    import { RockBelt } from '../js/space/rocks.js';
+    import { COURSES } from '../js/flight/courseDefs.js';
+    import { ARENAS } from '../js/flight/arenaDefs.js';
+    import { Course } from '../js/flight/course.js';
+    import { Arena } from '../js/flight/arena.js';
+    import { SpaceWorld } from '../js/flight/world.js';
+    import { Hazards } from '../js/flight/hazards.js';
+    import { HazardViews } from '../js/space/hazardViews.js';
+
+    const params = new URLSearchParams(location.search);
+    const quality = params.get('quality') || 'high';
+
+    // ------------------------------------------------------------ renderer + post (as the game)
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.5, 20000);
+    scene.add(camera);
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.5, 0.82);
+    composer.addPass(bloom);
+    if (params.has('nobloom')) bloom.enabled = false;
+    composer.addPass(new OutputPass());
+
+    // ------------------------------------------------------------ stand-in player craft (js/craft is being rebuilt)
+    function standIn() {
+      const g = new THREE.Group();
+      const hull = new THREE.MeshStandardMaterial({ color: '#b9c3d2', metalness: 0.6, roughness: 0.35, emissive: '#22344a' });
+      const dark = new THREE.MeshStandardMaterial({ color: '#2b3240', metalness: 0.7, roughness: 0.4 });
+      const body = new THREE.Mesh(new THREE.ConeGeometry(0.9, 4.6, 8).rotateX(-Math.PI / 2), hull);
+      g.add(body);
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.12, 1.4), dark);
+      wing.position.set(0, -0.15, 0.9); g.add(wing);
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.9, 1.1), dark);
+      fin.position.set(0, 0.5, 1.4); g.add(fin);
+      const flame = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8), new THREE.MeshBasicMaterial({ color: new THREE.Color('#ffd9a8').multiplyScalar(0.9) }));
+      flame.position.z = 2.4; g.add(flame);
+      return g;
+    }
+    const ship = standIn();
+    scene.add(ship);
+
+    // ------------------------------------------------------------ world
+    let ctx = null;
+    function setWorld(game, id, intensity = 0.6) {
+      if (ctx && ctx.game === game && ctx.id === id && ctx.intensity === intensity) { resetHazards(); return ctx; }
+      if (ctx) { ctx.views.dispose(); ctx.hz.dispose(); ctx.sky.dispose(); ctx.tunnel?.dispose(); ctx.belts.forEach((b) => b.dispose()); }
+      const def = game === 'battle' ? ARENAS.find((a) => a.id === id) || ARENAS[0] : COURSES.find((c) => c.id === id) || COURSES[0];
+      const course = game === 'battle' ? new Arena(def) : new Course(def);
+      const world = new SpaceWorld(course);
+      const sky = new SpaceSky(renderer, scene, def.theme, { quality: 'high' });
+      const tunnel = game === 'battle' ? null : new Tunnel(scene, course, { color: def.theme.accent, quality });
+      if (tunnel) tunnel.pixelHeight = renderer.domElement.height;
+      const belts = (def.belts || []).map((b, i) => new RockBelt(scene, { ...b, count: Math.round(b.count * 0.5), seed: 5 + i }));
+      ctx = { game, id, intensity, def, course, world, sky, tunnel, belts };
+      resetHazards();
+      return ctx;
+    }
+    function resetHazards() {
+      if (ctx.views) { ctx.views.dispose(); ctx.hz.dispose(); }
+      ctx.hz = new Hazards(ctx.course, ctx.world, { seed: 1, game: ctx.game, intensity: ctx.intensity, authority: true });
+      ctx.views = new HazardViews(scene, ctx.hz, { quality });
+      ctx.t = 0;
+    }
+
+    // A fake pilot for hazards to react to.
+    const you = { id: 'you', connected: true, local: true, sim: { pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion(), dead: false, ghost: 0, finished: false, started: true, p: { radius: 2.2 } } };
+    const ships = [you];
+    const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _m = new THREE.Matrix4();
+    function placeShip(pos, fwd, up) {
+      you.sim.pos.copy(pos);
+      _m.lookAt(_a.set(0, 0, 0), _b.copy(fwd).negate(), up);
+      you.sim.quat.setFromRotationMatrix(_m);
+      // three's lookAt points -Z at the target for cameras; for objects keep -Z = forward:
+      _m.makeBasis(_a.crossVectors(up, _b.copy(fwd).negate()).normalize(), up, _b);
+      you.sim.quat.setFromRotationMatrix(_m);
+      ship.position.copy(pos); ship.quaternion.copy(you.sim.quat); ship.visible = true;
+    }
+    function frameAt(u) { return ctx.course.frameAt(((u % 1) + 1) % 1); }
+
+    /** Step views + (optionally) hazard logic with a fixed dt, render the last frame. */
+    function run(frames, { dt = 1 / 60, logic = 'none', onStep = null } = {}) {
+      for (let i = 0; i < frames; i++) {
+        ctx.t += dt;
+        if (onStep) onStep(dt, i);
+        if (logic === 'full') ctx.hz.update(dt, ships, ctx.t);
+        else if (logic === 'plasmoids') { ctx.hz.time = ctx.t; ctx.hz._lastShips = ships; ctx.hz._shipById = new Map([['you', you]]); ctx.hz._evalPlasmoids(dt, ships); ctx.hz._updateBolts(dt, ships); }
+        for (const ev of ctx.hz.events) { if (ev.type === 'droneFire') ctx.hz.spawnBolt(ev); ctx.views.onEvent(ev); }
+        ctx.hz.events.length = 0;
+        ctx.views.update(dt, camera);
+        ctx.tunnel?.update(dt, camera, { shipPos: ship.visible ? you.sim.pos : null, speed: you.sim.vel.length() });
+        ctx.belts.forEach((b) => b.update(dt));
+        ctx.sky.update(camera, dt);
+      }
+      camera.updateMatrixWorld();
+      composer.render(dt);
+      return stats();
+    }
+    function look(pos, target, up = new THREE.Vector3(0, 1, 0), fov = 62) {
+      camera.position.copy(pos); camera.up.copy(up); camera.lookAt(target);
+      camera.fov = fov; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+    }
+    function stage(type, pos, face, up, { charge = 0, vis = 1, vel = null, state = 'hunt' } = {}) {
+      const d = ctx.hz._newDrone(type, pos, state);
+      ctx.hz._orient(d, face.clone().normalize(), up, 1);
+      d.charge = charge; d.vis = vis;
+      if (vel) d.vel.copy(vel);
+      return d;
+    }
+    function clearDrones() { for (const d of [...ctx.hz.drones]) ctx.hz._removeDrone(d); }
+
+    // ------------------------------------------------------------ scenes
+    const SCENES = {
+      // A plasmoid in the wormhole with a ship close enough to set off the warning and arcs.
+      plasmoid() {
+        setWorld('race', 'corona');
+        clearDrones();
+        const p = ctx.hz.plasmoids[1];
+        const T = 40;
+        ctx.t = T; ctx.hz.time = T; ctx.hz._evalPlasmoids(0, null);
+        const f = frameAt(p.u);
+        const cam = p.pos.clone().addScaledVector(f.T, -(p.r * 2.2 + 30)).addScaledVector(f.R, p.r * 1.2 + 6).addScaledVector(f.U, p.r * 0.5 + 3);
+        // The pilot: between us and the plasmoid, a little left of it and close enough to set off the warning.
+        _a.copy(p.pos).lerp(cam, 0.45).addScaledVector(f.R, -p.r * 1.3).addScaledVector(f.U, -p.r * 0.3);
+        placeShip(_a, _b.copy(f.T).addScaledVector(f.R, 0.35).normalize(), f.U);
+        look(cam, p.pos.clone().addScaledVector(f.T, -p.r * 0.9).addScaledVector(f.R, p.r * 0.2), f.U, 55);
+        return run(40, { logic: 'plasmoids' });
+      },
+      // Down the tube: a sweep of plasmoids drifting across the wormhole ahead.
+      tunnel() {
+        setWorld('race', 'shatter');
+        clearDrones();
+        const p = ctx.hz.plasmoids[2];
+        const T = 12;
+        ctx.t = T; ctx.hz.time = T; ctx.hz._evalPlasmoids(0, null);
+        const L = ctx.course.length;
+        const u0 = p.u - 170 / L;
+        const f = frameAt(u0 + 14 / L);
+        placeShip(f.pos.clone().addScaledVector(f.U, -6), f.T, f.U);
+        const fc = frameAt(u0);
+        look(fc.pos.clone().addScaledVector(fc.U, -2), frameAt(p.u).pos, fc.U, 70);
+        return run(30, { logic: 'plasmoids' });
+      },
+      // Approaching an ambush nest: Vesk clinging to the tunnel wall, eyes on you.
+      nest() {
+        setWorld('race', 'veil');
+        const nest = ctx.hz.nests[1];
+        const L = ctx.course.length;
+        const fc = frameAt(nest.u - 95 / L);
+        ship.visible = false;
+        you.sim.pos.set(0, 1e5, 0);
+        const target = nest.slots[0].anchor.clone().lerp(nest.pos, 0.35);
+        look(fc.pos.clone().addScaledVector(fc.U, -4), target, fc.U, 60);
+        return run(30, { logic: 'plasmoids' });
+      },
+      // Live: fly on rails through a nest and let the pack launch and strafe (real AI).
+      ambush() {
+        setWorld('race', 'corona');
+        const nest = ctx.hz.nests[0];
+        const L = ctx.course.length;
+        let u = nest.u - 520 / L;
+        const speed = 128;
+        ctx.t = 0;
+        const step = (dt) => {
+          u += (speed * dt) / L;
+          const f = frameAt(u);
+          const R = ctx.course.tunnelRadiusAt(u);
+          placeShip(f.pos.clone().addScaledVector(f.R, Math.sin(ctx.t * 0.6) * R * 0.2).addScaledVector(f.U, -R * 0.12), f.T, f.U);
+          you.sim.vel.copy(f.T).multiplyScalar(speed);
+          ctx.hz.shipInfo.delete('you');
+        };
+        // Run the logic for ~5.6 s (no rendering), then frame a chase shot.
+        for (let i = 0; i < 336; i++) { step(1 / 60); ctx.t += 1 / 60; ctx.hz.update(1 / 60, ships, ctx.t); for (const ev of ctx.hz.events) { if (ev.type === 'droneFire') ctx.hz.spawnBolt(ev); ctx.views.onEvent(ev); } ctx.hz.events.length = 0; ctx.views.update(1 / 60, camera); }
+        const f = frameAt(u);
+        const cam = you.sim.pos.clone().addScaledVector(f.T, -16).addScaledVector(f.U, 4.2);
+        look(cam, you.sim.pos.clone().addScaledVector(f.T, 40), f.U, 74);
+        return run(2, { logic: 'full', onStep: step });
+      },
+      // Close-up: a skitter mid wind-up, a warden charging behind it, a bolt and an orb inbound.
+      windup() {
+        setWorld('race', 'shatter');
+        clearDrones();
+        const f = frameAt(0.18);
+        ship.visible = false; you.sim.pos.set(0, 1e5, 0);
+        const cam = f.pos.clone().addScaledVector(f.U, -8);
+        const at = (t, r, u) => cam.clone().addScaledVector(f.T, t).addScaledVector(f.R, r).addScaledVector(f.U, u);
+        const sk = at(17, -5.5, -1.5);
+        stage('skitter', sk, cam.clone().sub(sk).addScaledVector(f.R, 4), f.U, { charge: 0.78 });
+        const sk2 = at(46, -22, 9);
+        stage('skitter', sk2, f.R.clone().addScaledVector(f.T, -0.4), f.U, { vel: f.R.clone().multiplyScalar(50) });
+        const wd = at(85, 20, 9);
+        stage('warden', wd, cam.clone().sub(wd).addScaledVector(f.R, -20), f.U, { charge: 0.55 });
+        ctx.hz.spawnBolt({ kind: 'bolt', pos: at(30, -12, 4), dir: at(0, 12, -7).sub(at(30, -12, 4)).normalize(), speed: 240, droneId: 0 });
+        ctx.hz.spawnBolt({ kind: 'orb', pos: at(62, 13, 5), dir: cam.clone().sub(at(62, 13, 5)).normalize(), speed: 125, droneId: 0 });
+        look(cam, at(40, 0, 2), f.U, 64);
+        return run(8, { logic: 'plasmoids' });
+      },
+      // The two castes side by side, idle, lit by the course sun (model check).
+      models() {
+        setWorld('race', 'corona');
+        clearDrones();
+        const f = frameAt(0.45);
+        ship.visible = true;
+        const cam = f.pos.clone().addScaledVector(f.U, 2);
+        placeShip(f.pos.clone().addScaledVector(f.T, 14).addScaledVector(f.R, -7).addScaledVector(f.U, -2), f.T, f.U);
+        const a = f.pos.clone().addScaledVector(f.T, 15).addScaledVector(f.R, 1.5).addScaledVector(f.U, 1.5);
+        stage('skitter', a, f.R.clone().multiplyScalar(-1).addScaledVector(f.T, -0.9), f.U);
+        const b = f.pos.clone().addScaledVector(f.T, 38).addScaledVector(f.R, 15).addScaledVector(f.U, 4);
+        stage('warden', b, f.R.clone().multiplyScalar(-1).addScaledVector(f.T, -0.6), f.U);
+        look(cam, f.pos.clone().addScaledVector(f.T, 30).addScaledVector(f.R, 6).addScaledVector(f.U, 1), f.U, 60);
+        return run(6, { logic: 'plasmoids' });
+      },
+      // Bolts in flight: a volley streaking past the camera.
+      bolts() {
+        setWorld('race', 'corona');
+        clearDrones();
+        const f = frameAt(0.62);
+        ship.visible = true;
+        placeShip(f.pos.clone().addScaledVector(f.T, 10).addScaledVector(f.U, -3), f.T, f.U);
+        const src = f.pos.clone().addScaledVector(f.T, 130).addScaledVector(f.U, 8);
+        for (let k = 0; k < 4; k++) {
+          const p = src.clone().addScaledVector(f.R, (k - 1.5) * 10).addScaledVector(f.T, -k * 22);
+          stage('skitter', p.clone().addScaledVector(f.T, 6 + k * 3), f.T.clone().negate(), f.U, { vel: f.T.clone().multiplyScalar(110) });
+          ctx.hz.spawnBolt({ kind: 'bolt', pos: p, dir: you.sim.pos.clone().addScaledVector(f.R, (k - 1.5) * 4).sub(p).normalize(), speed: 240, droneId: 0 });
+        }
+        look(f.pos.clone().addScaledVector(f.U, 2).addScaledVector(f.R, -6), f.pos.clone().addScaledVector(f.T, 60), f.U, 66);
+        return run(10, { logic: 'plasmoids' });
+      },
+      // A plasmoid bursting: a few frames after the pop.
+      pop() {
+        setWorld('race', 'veil');
+        clearDrones();
+        const p = ctx.hz.plasmoids[3];
+        const T = 30;
+        ctx.t = T; ctx.hz.time = T; ctx.hz._lastShips = ships; ctx.hz._evalPlasmoids(0, null);
+        const f = frameAt(p.u);
+        ship.visible = false; you.sim.pos.set(0, 1e5, 0);
+        look(p.pos.clone().addScaledVector(f.T, -(p.r * 6 + 30)).addScaledVector(f.U, 4), p.pos, f.U, 60);
+        run(2, { logic: 'plasmoids' });
+        ctx.hz.hitPlasmoid(p.id, 999, 'you');
+        return run(6, { logic: 'plasmoids' });
+      },
+      // A skitter (and a warden) shattering.
+      kill() {
+        setWorld('race', 'shatter');
+        clearDrones();
+        const f = frameAt(0.55);
+        ship.visible = false; you.sim.pos.set(0, 1e5, 0);
+        const a = f.pos.clone().addScaledVector(f.T, 40).addScaledVector(f.R, -9);
+        const b = f.pos.clone().addScaledVector(f.T, 95).addScaledVector(f.R, 16).addScaledVector(f.U, 6);
+        const d1 = stage('skitter', a, f.R, f.U, { vel: f.R.clone().multiplyScalar(60) });
+        const d2 = stage('warden', b, f.R.clone().negate(), f.U);
+        stage('skitter', f.pos.clone().addScaledVector(f.T, 60).addScaledVector(f.R, 12).addScaledVector(f.U, -8), f.T.clone().negate(), f.U, { charge: 0.3 });
+        look(f.pos.clone().addScaledVector(f.U, -2), f.pos.clone().addScaledVector(f.T, 60), f.U, 66);
+        run(2, { logic: 'plasmoids' });
+        ctx.hz.damageDrone(d1.id, 999, 'you');
+        run(4, { logic: 'plasmoids' });
+        ctx.hz.damageDrone(d2.id, 999, 'you');
+        return run(5, { logic: 'plasmoids' });
+      },
+      // Battle: a Vesk wave arriving from the arena edge, plasmoids drifting nearby.
+      arena() {
+        setWorld('battle', 'driftyard');
+        // Three pilots circling near the middle; the first wave arrives ~26 s in.
+        const pilots = [you, { ...you, id: 'b1', sim: { ...you.sim, pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion() } }, { ...you, id: 'b2', sim: { ...you.sim, pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion() } }];
+        ships.length = 0; ships.push(...pilots);
+        const place = (t) => pilots.forEach((s, k) => {
+          const a = t * 0.18 + k * 2.1, R = 380 + k * 60;
+          s.sim.pos.set(Math.cos(a) * R, 60 + k * 40, Math.sin(a) * R);
+          s.sim.vel.set(-Math.sin(a), 0, Math.cos(a)).multiplyScalar(R * 0.18);
+          _m.lookAt(_a.set(0, 0, 0), s.sim.vel, new THREE.Vector3(0, 1, 0));
+          s.sim.quat.setFromRotationMatrix(_m);
+        });
+        ctx.t = 0;
+        const N = 60 * 41;
+        for (let i = 0; i < N; i++) {
+          ctx.t += 1 / 60; place(ctx.t); ctx.hz.update(1 / 60, ships, ctx.t);
+          for (const ev of ctx.hz.events) { if (ev.type === 'droneFire') ctx.hz.spawnBolt(ev); if (i > N - 150) ctx.views.onEvent(ev); }
+          ctx.hz.events.length = 0;
+          if (i > N - 150) ctx.views.update(1 / 60, camera);
+        }
+        // Frame the most engaged pilot from behind, looking at its nearest attacker.
+        let best = null, bd = Infinity;
+        for (const s of pilots) for (const d of ctx.hz.drones) { const dd = d.pos.distanceTo(s.sim.pos); if (dd < bd) { bd = dd; best = { s, d }; } }
+        const pilot = best ? best.s : you;
+        ship.visible = true; ship.position.copy(pilot.sim.pos); ship.quaternion.copy(pilot.sim.quat);
+        const toward = best ? best.d.pos.clone().sub(pilot.sim.pos).normalize() : new THREE.Vector3(0, 0, -1);
+        const camPos = pilot.sim.pos.clone().addScaledVector(toward, -22).add(new THREE.Vector3(0, 6, 0));
+        look(camPos, best ? best.d.pos.clone().lerp(pilot.sim.pos, 0.3) : new THREE.Vector3(), new THREE.Vector3(0, 1, 0), 68);
+        const r = run(2, { logic: 'full', onStep: () => { place(ctx.t); ship.position.copy(pilot.sim.pos); } });
+        ships.length = 0; ships.push(you);
+        return r;
+      },
+    };
+
+    function stats() {
+      const info = renderer.info;
+      return { drones: ctx.hz.drones.length, bolts: ctx.hz.bolts.filter((b) => b.alive).length, plasmoids: ctx.hz.plasmoids.length, hazardDrawCalls: ctx.views.drawCalls, calls: info.render.calls, t: +ctx.t.toFixed(2), states: ctx.hz.drones.map((d) => d.state[0] + (d.charge > 0 ? '*' : '')).join('') };
+    }
+    function hazardCalls() {
+      // Render only the hazard objects to count their draw calls.
+      const v = ctx.views;
+      const mine = new Set([v.plasmoids, v.bb.mesh, v.skitters.mesh, v.wardens.mesh]);
+      const vis = scene.children.map((o) => o.visible);
+      scene.children.forEach((o) => { if (!mine.has(o)) o.visible = false; });
+      const bg = scene.background; scene.background = null;
+      renderer.info.autoReset = false; renderer.info.reset();
+      renderer.render(scene, camera);
+      const calls = renderer.info.render.calls;
+      renderer.info.autoReset = true;
+      scene.background = bg;
+      scene.children.forEach((o, i) => { o.visible = vis[i]; });
+      return calls;
+    }
+
+    // ------------------------------------------------------------ UI
+    const scenesEl = document.getElementById('scenes');
+    for (const k of Object.keys(SCENES)) { const b = document.createElement('button'); b.textContent = k; b.onclick = () => show(k); scenesEl.appendChild(b); }
+    const statsEl = document.getElementById('stats');
+    let current = null, paused = false, last = performance.now();
+    function show(name) { current = name; const r = SCENES[name](); statsEl.textContent = `${name}: ${JSON.stringify(r)}`; return r; }
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'h' || e.key === 'H') document.getElementById('panel').classList.toggle('hidden');
+      else if (e.key === ' ') paused = !paused;
+    });
+    function loop() {
+      requestAnimationFrame(loop);
+      const now = performance.now(); const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      if (paused || !ctx) return;
+      run(1, { dt, logic: current === 'ambush' || current === 'arena' ? 'none' : 'plasmoids' });
+    }
+    window.gallery = { THREE, scene, camera, renderer, composer, show, run, hazardCalls, get ctx() { return ctx; }, scenes: Object.keys(SCENES), hidePanel(h = true) { document.getElementById('panel').classList.toggle('hidden', h); }, ready: true };
+    if (!params.has('manual')) { show(params.get('scene') || 'plasmoid'); loop(); }
+  </script>
+</body>
+</html>

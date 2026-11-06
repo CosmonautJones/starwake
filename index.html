@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starwake</title>
+  <meta name="description" content="Starwake — free-flight space racing and combat in the browser. Build a craft, race down glowing wormholes, blast rivals and asteroids.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Saira:ital,wdth,wght@0,87.5..112.5,400..800;1,87.5..112.5,500..800&family=Unbounded:wght@500..900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 22 L28 10 L18 22 Z' fill='%233cf0ff'/%3E%3Cpath d='M2 24 H22' stroke='%23ff4fa3' stroke-width='2'/%3E%3C/svg%3E">
+  <script type="importmap">
+    { "imports": {
+        "three": "./vendor/three/three.module.js",
+        "three/addons/": "./vendor/three/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div id="labels" aria-hidden="true"></div>
+  <div id="hud-root"></div>
+  <main id="ui"></main>
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <div id="fps" hidden></div>
+  <div id="boot">
+    <div class="boot-inner">
+      <div class="boot-mark">Starwake</div>
+      <p class="boot-msg">Igniting engines…</p>
+      <noscript><p class="boot-msg">Starwake needs JavaScript enabled.</p></noscript>
+    </div>
+  </div>
+  <script type="module" src="js/main.js"></script>
+  <script>
+    // If modules fail to load at all (old browser, file:// restrictions), say so plainly.
+    setTimeout(function () {
+      var b = document.getElementById('boot');
+      if (b && !b.classList.contains('done') && !b.classList.contains('failed')) {
+        b.querySelector('.boot-msg').textContent = location.protocol === 'file:'
+          ? 'Starwake has to be served over http. Run “npm start” in the project folder and open the address it prints.'
+          : 'Still loading… If this doesn’t finish, check the browser console for errors.';
+      }
+    }, 9000);
+  </script>
+</body>
+</html>

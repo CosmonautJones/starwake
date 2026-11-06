@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starwake audio/input test</title>
+<link rel="icon" href="data:,">
+<style>
+  html, body { margin: 0; }
+  body { font: 13px/1.4 system-ui, sans-serif; background: #0b0d18; color: #dde; height: 3000px; }
+  #scene { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; z-index: 0; cursor: crosshair; }
+  #ui { position: fixed; top: 0; left: 0; bottom: 0; width: 470px; max-width: calc(100vw - 32px); overflow-y: auto;
+        padding: 12px 16px; box-sizing: border-box; z-index: 1; background: rgba(11, 13, 24, 0.82); }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  h2 { font-size: 13px; margin: 10px 0 4px; color: #9ab; font-weight: 600; }
+  button { margin: 2px; padding: 3px 7px; font: inherit; }
+  pre { background: #151a2e; padding: 8px; min-height: 6em; margin: 6px 0; white-space: pre-wrap; }
+  label { margin-right: 10px; white-space: nowrap; }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<main id="ui">
+  <h1>Starwake audio + input scratch test</h1>
+  <p>Click anywhere once to unlock audio. Area right of this panel is the fake <code>#scene</code>:
+    move the mouse there to aim, LMB fire, RMB missile. Keys: W/S throttle/brake, A/D/Q/E roll, arrows aim,
+    Space/Shift boost, F/J fire, G/K missile.</p>
+  <h2>Menu / race sounds</h2>
+  <div id="sfx"></div>
+  <h2>Combat sounds</h2>
+  <div id="combat"></div>
+  <p>
+    <label>size <input id="size" type="range" min="0" max="1" step="0.05" value="0.6"></label>
+    <label>distance <input id="dist" type="range" min="0" max="1" step="0.05" value="0"></label>
+    <label>streak <input id="streak" type="number" min="0" max="10" value="0" style="width:3em"></label>
+  </p>
+  <p>
+    <button id="laserBurst">laser burst x3 ships</button>
+    <button id="ringRun">ring run (streak 0..10)</button>
+  </p>
+  <h2>Music / engine</h2>
+  <p>
+    <button data-music="menu">music menu</button>
+    <button data-music="race">music race</button>
+    <button data-music="">music off</button>
+    <label><input type="checkbox" id="eng"> engine</label>
+    <label><input type="checkbox" id="duck"> duck</label>
+  </p>
+  <h2>Input options</h2>
+  <p>
+    <label><input type="checkbox" id="race" checked> race mode</label>
+    <label><input type="checkbox" id="inv"> invertY</label>
+    <label>sens <input id="sens" type="range" min="0.2" max="3" step="0.1" value="1"></label>
+    <button id="lock">lock pointer</button>
+    <button id="unlock">exit lock</button>
+    <button id="recenter">recenter</button>
+    <label>name <input id="name" type="text"></label>
+  </p>
+  <pre id="out"></pre>
+  <pre id="edges"></pre>
+</main>
+<script type="module">
+  import { AudioEngine } from '../js/core/audio.js';
+  import { Input } from '../js/core/input.js';
+
+  const audio = new AudioEngine();
+  const input = new Input(window);
+  input.setRaceMode(true);
+  input.onAnyInput(() => audio.unlock());
+  window.SW = { AudioEngine, Input, audio, input, manual: true };
+
+  const $ = (id) => document.getElementById(id);
+  const names = ['click', 'hover', 'back', 'countdown', 'go', 'gate', 'lap', 'finalLap', 'wall', 'hazard', 'pad',
+    'driftBoost', 'respawn', 'finish', 'win', 'lose', 'join', 'leave', 'ready', 'error'];
+  const combat = ['laser', 'laserHit', 'shieldHit', 'hullHit', 'shieldDown', 'missileLaunch', 'locking', 'locked',
+    'missileWarn', 'explosion', 'shatter:rock', 'shatter:ice', 'shatter:metal', 'shatter:crystal',
+    'pickup:boost', 'pickup:missile', 'pickup:shield', 'ring', 'missedRing', 'overheat', 'boostStart'];
+  window.SW.combatNames = combat;
+
+  function addButtons(host, list, optsFor) {
+    for (const n of list) {
+      const b = document.createElement('button');
+      b.textContent = n;
+      b.dataset.sound = n;
+      b.onclick = () => {
+        const [name, kind] = n.split(':');
+        audio.play(name, optsFor(name, kind));
+      };
+      b.onmouseenter = () => audio.play('hover');
+      host.appendChild(b);
+    }
+  }
+  addButtons($('sfx'), names, (n) => (n === 'wall' ? { intensity: 0.8 } : n === 'hazard' ? { kind: Math.random() < 0.5 ? 'mine' : 'asteroid' } : {}));
+  addButtons($('combat'), combat, (name, kind) => ({
+    kind,
+    size: +$('size').value,
+    distance: +$('dist').value,
+    streak: +$('streak').value,
+    pan: name === 'laser' ? Math.random() * 2 - 1 : undefined,
+  }));
+  $('laserBurst').onclick = () => {
+    for (let i = 0; i < 12; i++) setTimeout(() => audio.play('laser', { pan: (i % 3) - 1, volume: i % 3 === 1 ? 1 : 0.5 }), i * 42);
+  };
+  $('ringRun').onclick = () => {
+    for (let i = 0; i <= 10; i++) setTimeout(() => audio.play('ring', { streak: i }), i * 260);
+  };
+  for (const b of document.querySelectorAll('[data-music]')) b.onclick = () => audio.music(b.dataset.music || null);
+  $('duck').onchange = (e) => audio.duck(e.target.checked);
+  $('race').onchange = (e) => input.setRaceMode(e.target.checked);
+  const applyOpts = () => input.setOptions({ invertY: $('inv').checked, sensitivity: +$('sens').value });
+  $('inv').onchange = applyOpts;
+  $('sens').oninput = applyOpts;
+  $('lock').onclick = () => input.requestPointerLock($('scene'));
+  $('unlock').onclick = () => input.exitPointerLock();
+  $('recenter').onclick = () => input.recenter();
+
+  // Reticle on the fake scene.
+  const cv = $('scene');
+  const g = cv.getContext('2d');
+  function draw(c, ctl) {
+    const w = innerWidth, h = innerHeight;
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    g.clearRect(0, 0, w, h);
+    const R = 0.36 * Math.min(w, h);
+    g.strokeStyle = '#334'; g.lineWidth = 1;
+    g.beginPath(); g.arc(w / 2, h / 2, R, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.moveTo(w / 2 - 6, h / 2); g.lineTo(w / 2 + 6, h / 2); g.moveTo(w / 2, h / 2 - 6); g.lineTo(w / 2, h / 2 + 6); g.stroke();
+    g.strokeStyle = ctl.fire ? '#ff4fa3' : ctl.missile ? '#ffc94f' : '#3cf0ff'; g.lineWidth = 2;
+    g.beginPath(); g.arc(c.px, c.py, 10, 0, Math.PI * 2); g.stroke();
+  }
+
+  // Manual loop (the automated test turns this off and drives poll() itself).
+  let speed = 0;
+  const edgeLog = [];
+  const EDGES = ['pause', 'reset', 'camera', 'confirm', 'back', 'fire', 'missile', 'lockLost', 'up', 'down', 'left', 'right'];
+  function frame() {
+    if (window.SW.manual) {
+      const c = input.poll();
+      speed += ((c.throttle - c.brake * 0.6) * 0.5 - speed * 0.25) / 60;
+      speed = Math.max(0, Math.min(1.4, speed + (c.boost ? 0.004 : 0)));
+      audio.setEngine({ active: $('eng').checked, speedN: speed, throttle: c.throttle, boost: c.boost });
+      const edges = EDGES.filter((a) => input.pressed(a));
+      if (edges.length) {
+        edgeLog.unshift(`${(performance.now() / 1000).toFixed(2)}s ${edges.join(' ')}`);
+        edgeLog.length = Math.min(edgeLog.length, 12);
+        $('edges').textContent = edgeLog.join('\n');
+      }
+      const cur = input.cursor;
+      const f = (v) => (typeof v === 'number' ? +v.toFixed(3) : v);
+      $('out').textContent = JSON.stringify({
+        ...Object.fromEntries(Object.entries(c).map(([k, v]) => [k, f(v)])),
+        cursor: { x: f(cur.x), y: f(cur.y), px: Math.round(cur.px), py: Math.round(cur.py) },
+        device: input.activeDevice, pad: input.gamepadConnected, locked: input.pointerLocked,
+        speed: f(speed), voices: audio._voices, buses: audio._buses,
+      }, null, 1);
+      draw(cur, c);
+      input.endFrame();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

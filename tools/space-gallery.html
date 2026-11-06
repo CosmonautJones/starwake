@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starwake Space Gallery</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: #cfd8e6; }
+    canvas { display: block; }
+    #panel { position: fixed; left: 10px; top: 10px; background: rgba(8, 12, 20, 0.72); border: 1px solid rgba(160, 190, 230, 0.18); border-radius: 6px; padding: 8px 10px; max-width: 330px; }
+    #panel.hidden { display: none; }
+    #panel b { color: #fff; }
+    #panel button { background: #142033; color: #d8e6ff; border: 1px solid #2a3f60; border-radius: 4px; padding: 3px 7px; margin: 2px 1px; cursor: pointer; font: inherit; }
+    #panel button:hover { background: #1d2f4a; }
+    #stats { margin-top: 6px; opacity: 0.8; white-space: pre; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+        "three": "../vendor/three/three.module.js",
+        "three/addons/": "../vendor/three/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <div id="panel">
+    <div><b>Starwake space gallery</b> — drag to orbit, wheel to zoom</div>
+    <div>T theme · 1–9/0 views · B shatter · E explode · D dust flight · H hide panel · Space pause</div>
+    <div id="themes"></div>
+    <div id="views"></div>
+    <div>
+      <button data-act="shatter">Shatter target</button>
+      <button data-act="explode">Explosion</button>
+      <button data-act="dust">Dust flight</button>
+    </div>
+    <div id="stats"></div>
+  </div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+    import { SpaceSky } from '../js/space/sky.js';
+    import { RockBelt, makeRockGeometry, rockMaterial, rockVariants } from '../js/space/rocks.js';
+    import { buildProp, disposeProp, updateProps, PROP_TYPES } from '../js/space/props.js';
+    import { Shatter, Explosions, SpaceDust } from '../js/space/fx.js';
+
+    // ------------------------------------------------------------ sample themes (one per course)
+    const THEMES = [
+      {
+        name: 'Amber Drift',
+        space: '#04060d', nebula: ['#23408f', '#8f2f5e'], nebulaStrength: 0.55, starDensity: 1,
+        sun: { dir: [0.4, 0.5, -0.7], color: '#fff1dc', intensity: 3.2, size: 1 },
+        ambient: '#33405f', ambientIntensity: 0.5,
+        fog: { color: '#0a0f1f', density: 0.00012 },
+        planets: [
+          { pos: [-5200, -900, -6400], radius: 2400, type: 'gas', color: '#c98a52', color2: '#7a4a2a', atmosphere: '#ffb37a', ring: { inner: 1.35, outer: 2.2, color: '#d9b48a', tilt: [1.2, 0.2, 0.3] } },
+          { pos: [3600, 1500, -7400], radius: 380, type: 'rocky', color: '#8c7d6c', color2: '#2f3f52', atmosphere: '#a8c8ff' },
+        ],
+      },
+      {
+        name: 'Glacier Reach',
+        space: '#03070c', nebula: ['#1b6a8a', '#2b3c94'], nebulaStrength: 0.5, starDensity: 1.3,
+        sun: { dir: [-0.55, 0.4, -0.6], color: '#e6f0ff', intensity: 3.4, size: 0.8 },
+        ambient: '#2c4a62', ambientIntensity: 0.55,
+        fog: { color: '#07121b', density: 0.0001 },
+        planets: [
+          { pos: [5200, -2400, -5600], radius: 2800, type: 'ice', color: '#d8e8f2', color2: '#7898b4', atmosphere: '#9adcff' },
+          { pos: [-2800, 1700, -7200], radius: 640, type: 'rocky', color: '#7d8a68', color2: '#1b3d6a', atmosphere: '#8cc6ff' },
+        ],
+      },
+      {
+        name: 'Ember Verge',
+        space: '#06040a', nebula: ['#8a2b2b', '#55288a'], nebulaStrength: 0.5, starDensity: 0.85,
+        sun: { dir: [0.72, 0.18, -0.62], color: '#ffc58f', intensity: 3.0, size: 1.6 },
+        ambient: '#4a3042', ambientIntensity: 0.45,
+        fog: { color: '#130a0e', density: 0.00014 },
+        planets: [
+          { pos: [-4400, -1600, -5600], radius: 2100, type: 'rocky', color: '#a2623e', color2: '#3b2520', atmosphere: '#ff9c6e' },
+          { pos: [2400, 2900, -8400], radius: 1500, type: 'gas', color: '#b4677e', color2: '#4a2a4c', atmosphere: '#ff8fa4', ring: { inner: 1.4, outer: 1.95, color: '#cfa293', tilt: [0.5, 0.1, -0.4] } },
+        ],
+      },
+    ];
+
+    // ------------------------------------------------------------ renderer + post
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 20000);
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.55, 0.5, 0.82);
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+
+    // ------------------------------------------------------------ content
+    let themeIndex = 0;
+    let sky = new SpaceSky(renderer, scene, THEMES[0], { quality: 'high' });
+    const errors = [];
+
+    const belt = new RockBelt(scene, { center: [0, -260, -1400], radius: 2300, thickness: 260, count: 700, seed: 3, kind: 'rock', sizeRange: [6, 70], tilt: [0.12, 0, 0.05] });
+    const belt2 = new RockBelt(scene, { center: [-900, 300, -900], radius: 700, thickness: 260, count: 160, seed: 9, kind: 'dark', sizeRange: [3, 28], shape: 'cloud',
+      avoid: (p, r) => p.length() < 420 + r });
+
+    const ROW = [
+      ['asteroid', [-150, 0, 0], 9], ['ice', [-105, 0, 0], 7], ['crystal', [-62, 0, 0], 1], ['cargo', [-28, 0, 0], 1.2],
+      ['satellite', [6, 0, 0], 1], ['beacon', [46, 0, 0], 1], ['monolith', [92, 2, 0], 1],
+    ];
+    const props = {};
+    function addProp(type, pos, scale, opts = {}, rot = [0, 0, 0]) {
+      const p = buildProp(type, opts);
+      p.object.position.set(...pos);
+      p.object.rotation.set(...rot);
+      p.object.scale.setScalar(scale);
+      p.scale = scale;
+      scene.add(p.object);
+      return p;
+    }
+    ROW.forEach(([t, pos, s], i) => { props[t] = addProp(t, pos, s, { seed: 3 + i }, [0.2, 0.6 + i * 0.3, 0.1]); });
+    props.beacon.object.rotation.set(0, 0.4, 0.05);
+    props.monolith.object.rotation.set(0, -0.35, 0);
+    props.cargo2 = addProp('cargo', [-30, 14, 10], 1.2, { seed: 8 }, [0.5, 1.2, 0.2]);
+    props.crystal2 = addProp('crystal', [-70, -16, 14], 0.8, { seed: 2, color: '#a46bff' }, [0.3, 1, -0.3]);
+    props.wreck = addProp('wreck', [-420, 60, -700], 1, { seed: 4 }, [0.15, 0.9, 0.12]);
+    props.station = addProp('station', [520, 20, -620], 1, { seed: 1 }, [0.05, -0.55, 0.0]);
+
+    // near asteroid field
+    const near = [];
+    {
+      let s = 17;
+      const r = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+      const kinds = ['asteroid', 'asteroid', 'asteroid', 'ice', 'asteroid'];
+      for (let i = 0; i < 46; i++) {
+        const pos = [(r() - 0.5) * 560, (r() - 0.5) * 200, -130 - r() * 300];
+        const sc = 2 + Math.pow(r(), 2.2) * 30;
+        const kind = kinds[i % kinds.length];
+        const p = addProp(kind, pos, sc, { seed: 50 + i }, [r() * 6, r() * 6, r() * 6]);
+        near.push(p);
+      }
+    }
+    // a few iron rocks
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(rockVariants('iron', 4)[i], rockMaterial('iron'));
+      m.position.set(-200 + i * 30, -50 - i * 8, -40 - i * 20);
+      m.scale.setScalar(6 + i * 3);
+      m.rotation.set(i, i * 2, 0);
+      scene.add(m);
+      near.push({ object: m, radius: 1, kind: 'rock', scale: m.scale.x });
+    }
+
+    const shatter = new Shatter(scene, { max: 500 });
+    const explosions = new Explosions(scene, { max: 24 });
+    const dust = new SpaceDust(scene, { count: 600 });
+
+    // ------------------------------------------------------------ camera views
+    const V = (pos, target, fov = 62) => ({ pos: new THREE.Vector3(...pos), target: new THREE.Vector3(...target), fov });
+    const P = (k) => props[k].object.position;
+    const views = {
+      wide: V([40, 40, 150], [-200, 0, -600]),
+      sky: V([0, 0, 0], [-0.55, -0.12, -0.75].map((v) => v * 1000)),
+      sun: V([0, 0, 0], [0, 0, 0]),
+      row: V([-30, 22, 95], [-30, 0, 0]),
+      rocks: V([-150 + 12, 3, 16], [-150, 0, 0]),
+      ice: V([-105 + 10, 4, 12], [-105, 0, 0]),
+      crystal: V([-62 + 9, 4, 11], [-62, 1.5, 0]),
+      cargo: V([-28 + 7, 4, 9], [-28, 0, 0]),
+      satellite: V([6 + 9, 4, 13], [6, 0, 0]),
+      beacon: V([46 + 18, 6, 26], [46, 3, 0]),
+      monolith: V([92 + 26, 8, 36], [92, 2, 0]),
+      wreck: V([-420 + 170, 100, -700 + 120], [-420, 60, -700]),
+      station: V([520 - 140, 80, -620 + 220], [520, 20, -620]),
+      through: V([520 + 150 * Math.sin(-0.55), 22, -620 + 150 * Math.cos(-0.55)], [520 - 300 * Math.sin(-0.55), 20, -620 - 300 * Math.cos(-0.55)]),
+      field: V([0, 10, 40], [-40, -10, -260]),
+    };
+    views.sun = V([0, 0, 0], sky.sunDirection.clone().multiplyScalar(1000).toArray());
+    const viewOrder = ['wide', 'rocks', 'ice', 'crystal', 'cargo', 'satellite', 'beacon', 'monolith', 'wreck', 'station'];
+    const ctl = { target: new THREE.Vector3(), yaw: 0, pitch: 0, dist: 10, current: 'wide' };
+    function view(name) {
+      const v = views[name];
+      if (!v) return;
+      ctl.current = name;
+      camera.fov = v.fov; camera.updateProjectionMatrix();
+      if (name === 'sun') views.sun = V([0, 0, 0], sky.sunDirection.clone().multiplyScalar(1000).toArray());
+      const vv = views[name];
+      ctl.target.copy(vv.target);
+      const d = vv.pos.clone().sub(vv.target);
+      ctl.dist = d.length();
+      ctl.yaw = Math.atan2(d.x, d.z);
+      ctl.pitch = Math.asin(d.y / ctl.dist);
+      applyCam();
+      flying = false;
+    }
+    function applyCam() {
+      const cp = Math.cos(ctl.pitch);
+      camera.position.set(ctl.target.x + Math.sin(ctl.yaw) * cp * ctl.dist, ctl.target.y + Math.sin(ctl.pitch) * ctl.dist, ctl.target.z + Math.cos(ctl.yaw) * cp * ctl.dist);
+      camera.lookAt(ctl.target);
+    }
+    let drag = null;
+    renderer.domElement.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; });
+    window.addEventListener('pointerup', () => { drag = null; });
+    window.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      ctl.yaw -= (e.clientX - drag.x) * 0.005; ctl.pitch = Math.max(-1.5, Math.min(1.5, ctl.pitch + (e.clientY - drag.y) * 0.005));
+      drag = { x: e.clientX, y: e.clientY }; flying = false; applyCam();
+    });
+    renderer.domElement.addEventListener('wheel', (e) => { ctl.dist *= Math.exp(e.deltaY * 0.001); applyCam(); }, { passive: true });
+
+    // ------------------------------------------------------------ actions
+    const shatterOrder = ['asteroid', 'ice', 'crystal', 'cargo', 'satellite', 'cargo2', 'crystal2'];
+    let shatterIdx = 0;
+    const hidden = [];
+    const _wp = new THREE.Vector3();
+    function shatterProp(name) {
+      const key = name ?? shatterOrder[shatterIdx++ % shatterOrder.length];
+      const p = props[key] || near[key];
+      if (!p) return;
+      p.object.getWorldPosition(_wp);
+      shatter.burst({ position: _wp.clone(), radius: p.radius * p.scale, kind: p.kind, color: p.tint });
+      if (p.kind !== 'rock' && p.kind !== 'ice') explosions.spawn({ position: _wp.clone(), size: 0.5 });
+      p.object.visible = false;
+      hidden.push({ p, t: 4.5 });
+      return key;
+    }
+    function explode(pos, size = 1, color) {
+      const at = pos ? new THREE.Vector3(...pos) : ctl.target.clone();
+      explosions.spawn({ position: at, size, color: color ? new THREE.Color(color) : undefined });
+    }
+    function setTheme(i) {
+      themeIndex = ((i % THEMES.length) + THEMES.length) % THEMES.length;
+      sky.dispose();
+      sky = new SpaceSky(renderer, scene, THEMES[themeIndex], { quality: 'high' });
+      views.sun = V([0, 0, 0], sky.sunDirection.clone().multiplyScalar(1000).toArray());
+      if (ctl.current === 'sun') view('sun');
+      return THEMES[themeIndex].name;
+    }
+    let flying = false;
+    const flyVel = new THREE.Vector3();
+    function setDust(on) {
+      flying = on;
+      if (on) { camera.position.set(-60, 8, 60); camera.lookAt(-60, 0, -400); }
+      return on;
+    }
+
+    // ------------------------------------------------------------ loop
+    let paused = false;
+    let last = performance.now();
+    function step(dt) {
+      for (const h of hidden) { h.t -= dt; if (h.t <= 0) h.p.object.visible = true; }
+      for (let i = hidden.length - 1; i >= 0; i--) if (hidden[i].t <= 0) hidden.splice(i, 1);
+      if (flying) {
+        camera.getWorldDirection(flyVel).multiplyScalar(190);
+        camera.position.addScaledVector(flyVel, dt);
+        camera.rotateZ(dt * 0.15);
+        dust.update(dt, camera.position, flyVel);
+      } else dust.update(dt, camera.position, flyVel.set(0, 0, 0));
+      belt.update(dt); belt2.update(dt);
+      updateProps(dt);
+      shatter.update(dt);
+      explosions.update(dt, camera);
+      sky.update(camera, dt);
+      composer.render(dt);
+    }
+    function loop() {
+      requestAnimationFrame(loop);
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      if (!paused) step(dt);
+    }
+
+    // ------------------------------------------------------------ UI
+    const themesEl = document.getElementById('themes');
+    THEMES.forEach((t, i) => { const b = document.createElement('button'); b.textContent = t.name; b.onclick = () => setTheme(i); themesEl.appendChild(b); });
+    const viewsEl = document.getElementById('views');
+    Object.keys(views).forEach((k) => { const b = document.createElement('button'); b.textContent = k; b.onclick = () => view(k); viewsEl.appendChild(b); });
+    document.querySelector('[data-act=shatter]').onclick = () => shatterProp();
+    document.querySelector('[data-act=explode]').onclick = () => explode();
+    document.querySelector('[data-act=dust]').onclick = () => setDust(!flying);
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 't' || e.key === 'T') setTheme(themeIndex + 1);
+      else if (e.key >= '0' && e.key <= '9') view(viewOrder[(+e.key + 9) % 10] || 'wide');
+      else if (e.key === 'b' || e.key === 'B') shatterProp();
+      else if (e.key === 'e' || e.key === 'E') explode();
+      else if (e.key === 'd' || e.key === 'D') setDust(!flying);
+      else if (e.key === 'h' || e.key === 'H') document.getElementById('panel').classList.toggle('hidden');
+      else if (e.key === ' ') paused = !paused;
+    });
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
+    });
+    const statsEl = document.getElementById('stats');
+    function info() {
+      renderer.info.autoReset = false;
+      renderer.info.reset();
+      sky.update(camera, 0);
+      renderer.render(scene, camera);
+      const r = { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, points: renderer.info.render.points, lines: renderer.info.render.lines,
+        geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures, programs: renderer.info.programs?.length, beltTris: belt.triangles + belt2.triangles,
+        propTris: Object.fromEntries(Object.entries(props).map(([k, p]) => [k, p.tris])) };
+      renderer.info.autoReset = true;
+      return r;
+    }
+    setInterval(() => { const i = info(); statsEl.textContent = `${THEMES[themeIndex].name} · view ${ctl.current}\ncalls ${i.calls} · tris ${(i.triangles / 1000).toFixed(0)}k`; }, 2000);
+
+    view('wide');
+    window.gallery = {
+      THREE, scene, camera, renderer, composer, THEMES, views, props, near, shatter, explosions, dust,
+      get sky() { return sky; }, PROP_TYPES,
+      setTheme, view, shatter: shatterProp, explode, setDust, info, errors,
+      pause() { paused = true; }, resume() { paused = false; last = performance.now(); },
+      step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt); },
+      render() { sky.update(camera, 0); composer.render(0); },
+      lookAt(pos, target, fov = 62) { flying = false; camera.fov = fov; camera.updateProjectionMatrix(); camera.position.set(...pos); ctl.target.set(...target); camera.lookAt(ctl.target); const d = camera.position.clone().sub(ctl.target); ctl.dist = d.length(); ctl.yaw = Math.atan2(d.x, d.z); ctl.pitch = Math.asin(d.y / ctl.dist); },
+      frame(key, distMul = 2.6, az = 0.7, el = 0.25, lit = true, fov = 55) {
+        const p = props[key] || near[key]; const tgt = p.object.getWorldPosition(new THREE.Vector3());
+        const R = p.radius * p.scale; const dist = R * distMul + 2;
+        const d = sky.sunDirection.clone(); if (!lit) d.negate(); d.y = 0; d.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), az); d.y = el; d.normalize();
+        this.lookAt(tgt.clone().addScaledVector(d, dist).toArray(), tgt.toArray(), fov);
+      },
+      hidePanel(h = true) { document.getElementById('panel').classList.toggle('hidden', h); },
+      ready: true,
+    };
+    if (!new URLSearchParams(location.search).has('manual')) loop();
+  </script>
+</body>
+</html>

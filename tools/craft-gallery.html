@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starwake Craft Gallery</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font: 12px/1.4 system-ui, sans-serif; color: #cfd8e6; }
+    canvas { display: block; }
+    #panel { position: fixed; left: 10px; top: 10px; background: rgba(8, 12, 20, 0.72); border: 1px solid rgba(160, 190, 230, 0.18); border-radius: 6px; padding: 8px 10px; max-width: 360px; }
+    #panel.hidden { display: none; }
+    #panel b { color: #fff; }
+    #panel button { background: #142033; color: #d8e6ff; border: 1px solid #2a3f60; border-radius: 4px; padding: 3px 7px; margin: 2px 1px; cursor: pointer; font: inherit; }
+    #panel button:hover { background: #1d2f4a; }
+    #stats { margin-top: 6px; opacity: 0.8; white-space: pre; }
+    #label { position: fixed; right: 12px; bottom: 10px; font: 600 13px/1.3 system-ui, sans-serif; color: #e6eefc; text-shadow: 0 1px 3px #000; text-align: right; white-space: pre; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+        "three": "../vendor/three/three.module.js",
+        "three/addons/": "../vendor/three/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <div id="panel">
+    <div><b>Starwake craft gallery</b> — drag to orbit, wheel to zoom</div>
+    <div>?course=corona|shatter|ice · ?mesh=&lt;module url&gt; (compare builders) · ?lod=low</div>
+    <div id="designs"></div>
+    <div id="views"></div>
+    <div id="stats"></div>
+  </div>
+  <div id="label"></div>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+    import { SpaceSky } from '../js/space/sky.js';
+    import { RockBelt } from '../js/space/rocks.js';
+    import { buildProp, updateProps } from '../js/space/props.js';
+    import { Tunnel } from '../js/space/tunnel.js';
+    import { Course } from '../js/flight/course.js';
+    import { getCourseDef } from '../js/flight/courseDefs.js';
+    import { PRESETS, randomDesign } from '../js/craft/parts.js';
+
+    const params = new URLSearchParams(location.search);
+    const meshUrl = params.get('mesh') || '../js/craft/craftMesh.js';
+    const { buildCraft } = await import(meshUrl);
+    const LOD = params.get('lod') === 'low' ? 'low' : 'high';
+    const errors = [];
+    window.addEventListener('error', (e) => errors.push(String(e.message)));
+
+    // ------------------------------------------------------------ renderer + post (as js/main.js, quality high)
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.5, 20000);
+    scene.add(camera);
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(scene, camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), +(params.get('bloom') || 0.7), 0.5, 0.82);
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+
+    // ------------------------------------------------------------ world: the course's sky, tunnel, belts + a busy asteroid field
+    const def = getCourseDef(params.get('course') || 'shatter');
+    const sky = new SpaceSky(renderer, scene, def.theme, { quality: 'high' });
+    if (def.theme.fog) scene.fog = new THREE.FogExp2(def.theme.fog.color, def.theme.fog.density);
+    const course = new Course(def);
+    const tunnel = new Tunnel(scene, course, { color: def.theme.accent, quality: 'high' });
+    const belts = (def.belts || []).map((b, i) => new RockBelt(scene, { ...b, seed: 11 + i }));
+
+    // Open-space stage well away from the tunnel: ships fly toward -Z from STAGE.
+    const STAGE = new THREE.Vector3(0, 2600, 2600);
+    const field = [];
+    {
+      let s = 23;
+      const r = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+      for (let i = 0; i < 150; i++) {
+        const p = new THREE.Vector3((r() - 0.5) * 1500, (r() - 0.5) * 500, -120 - r() * 1700).add(STAGE);
+        // keep sightlines to the test ships clear
+        const lat = Math.hypot(p.x - STAGE.x, p.y - STAGE.y);
+        if (lat < 40) continue;
+        const kind = i % 6 === 0 ? 'ice' : 'asteroid';
+        const pr = buildProp(kind, { seed: 70 + i });
+        pr.object.position.copy(p);
+        pr.object.rotation.set(r() * 6, r() * 6, r() * 6);
+        pr.object.scale.setScalar(3 + Math.pow(r(), 2) * 34);
+        scene.add(pr.object);
+        field.push(pr);
+      }
+    }
+
+    // ------------------------------------------------------------ craft
+    let rs = 1234567;
+    const rng = () => ((rs = (rs * 16807) % 2147483647) / 2147483647);
+    const DESIGNS = [...PRESETS];
+    for (let i = 0; i < 4; i++) DESIGNS.push(randomDesign(rng));
+    const ships = [];
+    function spawn(design, opts = {}) {
+      const c = buildCraft(design, { lod: opts.lod || LOD, underglow: false });
+      scene.add(c.root);
+      const s = { craft: c, design, thrust: opts.thrust ?? 0.6, boost: 0, own: false };
+      ships.push(s);
+      return s;
+    }
+    function clearShips() { for (const s of ships) { scene.remove(s.craft.root); s.craft.dispose(); } ships.length = 0; }
+
+    let time = 0;
+    let current = { name: 'none' };
+    const label = document.getElementById('label');
+    const setLabel = (t) => { label.textContent = t; };
+
+    // frame helpers ---------------------------------------------------
+    const tmpQ = new THREE.Quaternion(), tmpV = new THREE.Vector3(), tmpM = new THREE.Matrix4();
+    function orient(obj, fwd, up = new THREE.Vector3(0, 1, 0)) {
+      // craft nose is -Z: make local -Z point along fwd
+      tmpM.lookAt(new THREE.Vector3(), fwd, up);
+      obj.quaternion.setFromRotationMatrix(tmpM);
+    }
+
+    /** Hangar-style turntable close-up in open space (game sky + lights). */
+    function turntable(i = 0, yaw = 0.7, pitch = 0.3, dist = 15, fov = 38, shipYaw = 0) {
+      clearShips();
+      const s = spawn(DESIGNS[i]);
+      s.craft.root.position.copy(STAGE);
+      s.craft.root.rotation.y = shipYaw;
+      s.thrust = 0.35;
+      camera.fov = fov; camera.updateProjectionMatrix();
+      camera.position.set(STAGE.x + Math.sin(yaw) * Math.cos(pitch) * dist, STAGE.y + Math.sin(pitch) * dist, STAGE.z + Math.cos(yaw) * Math.cos(pitch) * dist);
+      camera.lookAt(STAGE);
+      current = { name: 'turntable', i, yaw, pitch, dist, fov, shipYaw };
+      setLabel(`${DESIGNS[i].name} · ${DESIGNS[i].body}/${DESIGNS[i].wings}/${DESIGNS[i].engines}/${DESIGNS[i].fins}/${DESIGNS[i].cockpit}\nturntable`);
+    }
+
+    /** Contact sheet: several designs side by side, 3/4 view. */
+    function sheet(list = [0, 1, 2, 3, 4], yaw = 0.75, pitch = 0.32, fov = 40) {
+      clearShips();
+      const n = list.length, gap = 10.5;
+      list.forEach((di, k) => {
+        const s = spawn(DESIGNS[di]);
+        s.thrust = 0.35;
+        s.craft.root.position.set(STAGE.x + (k - (n - 1) / 2) * gap, STAGE.y, STAGE.z);
+        s.craft.root.rotation.y = yaw;
+        s.craft.root.rotation.x = 0;
+      });
+      const dist = n * 7.4 + 6;
+      camera.fov = fov; camera.updateProjectionMatrix();
+      camera.position.set(STAGE.x, STAGE.y + Math.sin(pitch) * dist, STAGE.z + Math.cos(pitch) * dist);
+      camera.lookAt(STAGE.x, STAGE.y - 0.4, STAGE.z);
+      current = { name: 'sheet', list };
+      setLabel(list.map((di) => DESIGNS[di].name).join(' · '));
+    }
+
+    /** Game chase camera on a ship flying down the wormhole at lap fraction u. */
+    function chase(i = 0, u = 0.12, opts = {}) {
+      clearShips();
+      const f = course.frameAt(u);
+      const s = spawn(DESIGNS[i]);
+      s.own = opts.own ?? true;
+      s.thrust = opts.thrust ?? 0.8; s.boost = opts.boost ? 1 : 0;
+      const root = s.craft.root;
+      root.position.copy(f.pos).addScaledVector(f.U, opts.y ?? 0).addScaledVector(f.R, opts.x ?? 0);
+      orient(root, f.T, f.U);
+      if (opts.bank) root.rotateZ(opts.bank);
+      // camera = flightRace._updateCamera chase offsets
+      const speedN = 0.9, back = 14 + speedN * 2.5 + s.boost * 2.5, up = 4 + speedN * 0.4;
+      camera.quaternion.copy(root.quaternion);
+      if (opts.bank) camera.quaternion.multiply(tmpQ.setFromAxisAngle(tmpV.set(0, 0, 1), -opts.bank * 0.6));
+      camera.position.copy(root.position).add(tmpV.set(0, up, back).applyQuaternion(camera.quaternion));
+      camera.quaternion.multiply(tmpQ.setFromAxisAngle(tmpV.set(1, 0, 0), -0.07));
+      camera.fov = 70 + 8 * speedN + 6 * s.boost; camera.updateProjectionMatrix();
+      // a rival ahead to judge mid-range readability inside the tunnel
+      if (opts.rival !== false) {
+        const r2 = spawn(DESIGNS[(i + 1) % DESIGNS.length]);
+        const g = course.frameAt(u + (opts.rivalAhead ?? 0.035));
+        r2.craft.root.position.copy(g.pos).addScaledVector(g.R, 9).addScaledVector(g.U, 3);
+        orient(r2.craft.root, g.T, g.U);
+        r2.thrust = 0.9;
+      }
+      current = { name: 'chase', i, u };
+      setLabel(`${DESIGNS[i].name} · chase camera · ${def.name}`);
+    }
+
+    /**
+     * Visibility: ships at the given distances (side by side across the frame) against the
+     * busy open-space field (or inside the tunnel with inTunnel).
+     */
+    function range(dists = [150, 400, 900], list = [0, 1, 2], opts = {}) {
+      clearShips();
+      camera.fov = opts.fov ?? 74; camera.updateProjectionMatrix();
+      let origin, fwd, up, right;
+      if (opts.inTunnel) {
+        const f = course.frameAt(opts.u ?? 0.12);
+        origin = f.pos.clone().addScaledVector(f.U, 4); fwd = f.T.clone(); up = f.U.clone(); right = f.R.clone();
+      } else {
+        origin = STAGE.clone().add(new THREE.Vector3(0, 0, 60)); fwd = new THREE.Vector3(0, 0, -1); up = new THREE.Vector3(0, 1, 0); right = new THREE.Vector3(1, 0, 0);
+        if (opts.yaw) { fwd.applyAxisAngle(up, opts.yaw); right.applyAxisAngle(up, opts.yaw); }
+      }
+      camera.position.copy(origin);
+      camera.lookAt(origin.clone().add(fwd));
+      dists.forEach((d, k) => {
+        const s = spawn(DESIGNS[list[k % list.length]]);
+        s.thrust = 0.75;
+        // spread across the frame by angle so every ship is the same angular offset from centre
+        const ang = (k - (dists.length - 1) / 2) * (opts.spread ?? 0.3);
+        const dir = fwd.clone().applyAxisAngle(up, -ang).applyAxisAngle(right, (opts.lift ?? -0.02));
+        s.craft.root.position.copy(origin).addScaledVector(dir, d);
+        // three-quarter-on, flying away and across
+        orient(s.craft.root, fwd.clone().applyAxisAngle(up, opts.heading ?? 0.9), up);
+        if (opts.team) s.craft.setTeamColor?.(opts.team[k % opts.team.length]);
+      });
+      current = { name: 'range', dists, list, opts };
+      setLabel(dists.map((d, k) => `${DESIGNS[list[k % list.length]].name} @ ${d}`).join('   ') + (opts.inTunnel ? '   (tunnel)' : '   (open field)'));
+    }
+
+    /** Team colours: red vs blue squads at mixed ranges (rim + beacon tint). */
+    function teams(opts = {}) {
+      clearShips();
+      camera.fov = 70; camera.updateProjectionMatrix();
+      const origin = STAGE.clone().add(new THREE.Vector3(0, 0, 60));
+      camera.position.copy(origin); camera.lookAt(origin.clone().add(new THREE.Vector3(0, 0, -1)));
+      const RED = '#ff3b3b', BLUE = '#3b8bff';
+      const spots = [
+        [-14, 2, -38, 0.6, RED, 0], [-30, -8, -95, 0.9, RED, 1], [-60, 18, -260, 1.2, RED, 2], [-160, -30, -700, 1.0, RED, 3],
+        [16, -1, -42, -0.7, BLUE, 4], [34, 9, -110, -0.9, BLUE, 5], [70, -14, -280, -1.3, BLUE, 6], [180, 40, -760, -1.0, BLUE, 7],
+      ];
+      for (const [x, y, z, h, col, di] of spots) {
+        const s = spawn(DESIGNS[di % DESIGNS.length]);
+        s.craft.root.position.copy(origin).add(new THREE.Vector3(x, y, z));
+        orient(s.craft.root, new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), h));
+        s.craft.setTeamColor?.(col);
+        if (opts.highlight != null && di === opts.highlight) s.craft.setHighlight?.(1);
+      }
+      current = { name: 'teams' };
+      setLabel('team colours: red (left) vs blue (right)' + (opts.highlight != null ? ' · one ship highlighted' : ''));
+    }
+
+    // ------------------------------------------------------------ orbit drag
+    let drag = null;
+    renderer.domElement.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY }; });
+    window.addEventListener('pointerup', () => { drag = null; });
+    window.addEventListener('pointermove', (e) => {
+      if (!drag || current.name !== 'turntable') return;
+      current.yaw -= (e.clientX - drag.x) * 0.006; current.pitch = Math.max(-1.2, Math.min(1.2, current.pitch + (e.clientY - drag.y) * 0.005));
+      drag = { x: e.clientX, y: e.clientY };
+      turntable(current.i, current.yaw, current.pitch, current.dist, current.fov, current.shipYaw);
+    });
+    renderer.domElement.addEventListener('wheel', (e) => { if (current.name === 'turntable') turntable(current.i, current.yaw, current.pitch, current.dist * Math.exp(e.deltaY * 0.001), current.fov, current.shipYaw); }, { passive: true });
+
+    // ------------------------------------------------------------ loop
+    let paused = false, spin = false;
+    function step(dt) {
+      time += dt;
+      for (const s of ships) s.craft.setThrust(s.thrust, s.boost, time, s.own ? 0.45 : 1);
+      if (spin && current.name === 'turntable') { current.yaw += dt * 0.35; turntable(current.i, current.yaw, current.pitch, current.dist, current.fov, current.shipYaw); }
+      updateProps(dt);
+      for (const b of belts) b.update(dt);
+      tunnel.update(dt, camera, { shipPos: ships[0]?.craft.root.position || null, speed: 150 });
+      sky.update(camera, dt);
+      camera.updateMatrixWorld();
+      composer.render(dt);
+    }
+    let last = performance.now();
+    function loop() {
+      requestAnimationFrame(loop);
+      const now = performance.now();
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      if (!paused) step(dt);
+    }
+
+    // ------------------------------------------------------------ UI
+    const designsEl = document.getElementById('designs');
+    DESIGNS.forEach((d, i) => { const b = document.createElement('button'); b.textContent = d.name; b.onclick = () => turntable(i); designsEl.appendChild(b); });
+    const viewsEl = document.getElementById('views');
+    const VIEWS = {
+      'sheet presets': () => sheet([0, 1, 2, 3, 4]), 'sheet random': () => sheet([5, 6, 7, 8]),
+      chase: () => chase(0), 'range field': () => range(), 'range tunnel': () => range([150, 400, 900], [0, 1, 2], { inTunnel: true, spread: 0.05 }),
+      teams: () => teams(), spin: () => { spin = !spin; },
+    };
+    for (const [k, fn] of Object.entries(VIEWS)) { const b = document.createElement('button'); b.textContent = k; b.onclick = fn; viewsEl.appendChild(b); }
+    window.addEventListener('keydown', (e) => { if (e.key === 'h' || e.key === 'H') document.getElementById('panel').classList.toggle('hidden'); else if (e.key === ' ') paused = !paused; });
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    function info() {
+      renderer.info.autoReset = false;
+      // count just the craft: hide everything else for one plain render
+      const hidden = [];
+      scene.children.forEach((o) => { if (!ships.some((s) => s.craft.root === o) && o !== camera && o.visible) { o.visible = false; hidden.push(o); } });
+      const bg = scene.background; scene.background = null;
+      renderer.info.reset();
+      renderer.render(scene, camera);
+      const r = { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, ships: ships.length, programs: renderer.info.programs?.length,
+        geometries: renderer.info.memory.geometries, textures: renderer.info.memory.textures,
+        perShip: ships.map((s) => ({ name: s.design.name, tris: s.craft.triangles || null })) };
+      hidden.forEach((o) => (o.visible = true)); scene.background = bg;
+      renderer.info.autoReset = true;
+      return r;
+    }
+
+    turntable(0);
+    window.gallery = {
+      THREE, scene, camera, renderer, composer, bloom, sky, tunnel, course, DESIGNS, ships, errors, def,
+      turntable, sheet, chase, range, teams, info, clearShips, spawn,
+      setSpin(v) { spin = v; }, pause() { paused = true; }, resume() { paused = false; last = performance.now(); },
+      step(n = 1, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt); },
+      /** advance time without rendering (cheap), then render one frame */
+      advance(t) { time += t; this.step(1, 0.0001); },
+      setTime(t) { time = t; },
+      hidePanel(h = true) { document.getElementById('panel').classList.toggle('hidden', h); },
+      ready: true,
+    };
+    if (!params.has('manual')) loop();
+  </script>
+</body>
+</html>
