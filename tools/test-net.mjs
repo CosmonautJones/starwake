@@ -4,11 +4,15 @@
 //
 // Part A runs NetSessions over BroadcastTransport inside this process (Node 22 has a
 // global BroadcastChannel). Part B starts the real server on a random port and runs the
-// same flow over the WebSocket relay. Exits non-zero if anything fails.
+// same flow over the WebSocket relay. Part C covers the hosted relay (origin allowlist,
+// rate and size limits, keepalive, RELAY_ONLY) and the online helpers (relay URL order,
+// invite links). Exits non-zero if anything fails.
 
+import WS, { WebSocketServer } from 'ws';
 import { NetSession, PROTOCOL_VERSION } from '../js/net/session.js';
-import { WsTransport, defaultRelayUrl } from '../js/net/transport.js';
-import { start as startServer } from '../server/server.mjs';
+import { WsTransport, defaultRelayUrl, closeReason } from '../js/net/transport.js';
+import { resolveRelayUrl, normalizeRelayUrl, inviteLink, parseInvite, servedByRelay, relayHealthUrl, LOCAL_RELAY } from '../js/net/online.js';
+import { start as startServer, originAllowed, configFromEnv } from '../server/server.mjs';
 
 let failures = 0;
 let passes = 0;
@@ -354,6 +358,286 @@ async function partB() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// C: hosted relay hardening + online helpers
+// ---------------------------------------------------------------------------
+
+/** Raw relay socket (the `ws` package, so tests can set Origin and turn off auto-pong). */
+function raw(url, room, peer, opts = {}) {
+  const ws = new WS(`${url}?room=${room}&peer=${peer}`, opts);
+  const msgs = [];
+  const opened = new Promise((resolve, reject) => {
+    ws.on('message', (d) => {
+      const m = JSON.parse(d.toString());
+      msgs.push(m);
+      if (m.sys === 'peers') resolve(m);
+    });
+    ws.on('error', reject);
+    ws.on('close', (code) => reject(new Error(`closed ${code} before joining`)));
+  });
+  const closed = new Promise((resolve) => ws.on('close', (code) => resolve(code)));
+  opened.catch(() => {});
+  return { ws, msgs, opened, closed };
+}
+const within = (p, ms, what) => Promise.race([p, sleep(ms).then(() => { throw new Error(`timed out: ${what}`); })]);
+
+async function partC() {
+  console.log('\n--- C: hosted relay (origins, limits, keepalive) and online helpers ---');
+
+  await step('origins: defaults allow localhost (any port), travisjohnjones.com, same host; refuse others', () => (
+    originAllowed(undefined, 'x')
+    && originAllowed('http://localhost:5173', 'relay.example')
+    && originAllowed('http://127.0.0.1:8080', 'relay.example')
+    && originAllowed('https://travisjohnjones.com', 'relay.example')
+    && originAllowed('https://www.travisjohnjones.com', 'relay.example')
+    && originAllowed('https://relay.example', 'relay.example')
+    && !originAllowed('https://evil.example', 'relay.example')
+    && !originAllowed('https://travisjohnjones.com.evil.example', 'relay.example')
+    && !originAllowed('null', 'relay.example')
+  ));
+
+  await step('origins: ALLOWED_ORIGINS patterns (scheme, port, *.wildcard, *)', () => {
+    const pats = ['https://game.example', '*.netlify.app', 'http://lan.example:9000'];
+    return originAllowed('https://game.example', 'h', pats)
+      && !originAllowed('http://game.example', 'h', pats)
+      && originAllowed('https://deploy-preview-3--site.netlify.app', 'h', pats)
+      && !originAllowed('https://netlify.app.evil.example', 'h', pats)
+      && originAllowed('http://lan.example:9000', 'h', pats)
+      && !originAllowed('http://lan.example:9001', 'h', pats)
+      && !originAllowed('http://localhost:8080', 'h', pats)
+      && originAllowed('https://anything.example', 'h', ['*']);
+  });
+
+  await step('config: env vars parse, junk falls back to defaults', () => {
+    const c = configFromEnv({ RELAY_ONLY: '1', ALLOWED_ORIGINS: ' a.example , https://b.example ', MAX_ROOMS: '7', MSG_RATE: 'lots', PING_MS: '-5' });
+    const d = configFromEnv({});
+    return c.relayOnly && c.allowedOrigins.join('|') === 'a.example|https://b.example' && c.maxRooms === 7
+      && c.msgRate === 200 && c.pingMs === 25000 && !d.relayOnly && d.allowedOrigins === null;
+  });
+
+  const srv = await startServer({
+    port: 0, host: '127.0.0.1', quiet: true,
+    allowedOrigins: ['https://friends.example'], msgRate: 10, msgBurst: 10, maxMsgBytes: 1024, maxRooms: 3, pingMs: 150,
+  });
+  const url = `ws://127.0.0.1:${srv.port}/relay`;
+  try {
+    await step('origin: allowed page joins; same-host page joins', async () => {
+      const a = raw(url, 'ORIG', 'peer0001', { origin: 'https://friends.example' });
+      const b = raw(url, 'ORIG', 'peer0002', { origin: `http://127.0.0.1:${srv.port}` });
+      try { await within(Promise.all([a.opened, b.opened]), 2000, 'join'); return true; } finally { a.ws.close(); b.ws.close(); }
+    });
+
+    await step('origin: other page is closed with 4003 and a clear message', async () => {
+      const c = raw(url, 'ORIG', 'peer0003', { origin: 'https://evil.example' });
+      const code = await within(c.closed, 2000, 'close');
+      return code === 4003 && /doesn't accept games from this site/.test(closeReason(4003, false)) && c.msgs.length === 0;
+    });
+
+    await step('rate limit: a burst over the allowance is trimmed, a flood is kicked (4008)', async () => {
+      const a = raw(url, 'RATE', 'peer0001');
+      const b = raw(url, 'RATE', 'peer0002');
+      try {
+        await within(Promise.all([a.opened, b.opened]), 2000, 'join');
+        await sleep(50);
+        const before = b.msgs.length;
+        for (let i = 0; i < 15; i++) a.ws.send(JSON.stringify({ msg: { i } }));
+        await sleep(150);
+        const got = b.msgs.length - before;
+        if (got < 10 || got > 12) throw new Error(`burst delivered ${got}`);
+        for (let i = 0; i < 60; i++) a.ws.send(JSON.stringify({ msg: { i } }));
+        const code = await within(a.closed, 2000, 'kick');
+        return code === 4008 && /too much data/.test(closeReason(4008, true));
+      } finally { a.ws.close(); b.ws.close(); }
+    });
+
+    await step('max message size: an oversized message closes the sender (1009), the room hears it left', async () => {
+      const a = raw(url, 'SIZE', 'peer0001');
+      const b = raw(url, 'SIZE', 'peer0002');
+      try {
+        await within(Promise.all([a.opened, b.opened]), 2000, 'join');
+        a.ws.send(JSON.stringify({ msg: 'x'.repeat(2000) }));
+        const code = await within(a.closed, 2000, 'close');
+        await sleep(50);
+        return code === 1009 && b.msgs.some((m) => m.sys === 'left' && m.peer === 'peer0001') && !b.msgs.some((m) => m.from);
+      } finally { a.ws.close(); b.ws.close(); }
+    });
+
+    await step('max rooms: a new room past the limit is refused with "busy"', async () => {
+      const ts = ['RMAA', 'RMAB', 'RMAC'].map((r) => { const t = new WsTransport(url); return [t, t.open(r)]; });
+      try {
+        await Promise.all(ts.map(([, p]) => p));
+        const extra = new WsTransport(url);
+        try { await extra.open('RMAD'); return false; } catch (err) { return /busy/.test(err.message); } finally { extra.close(); }
+      } finally { ts.forEach(([t]) => t.close()); }
+    });
+
+    await step('rooms are cleaned up when their last peer leaves', async () => {
+      await sleep(100);
+      return srv.relay.rooms.size === 0;
+    });
+
+    await step('keepalive: a socket that stops answering pings is dropped, a live one stays', async () => {
+      const dead = raw(url, 'KEEP', 'peer0001', { autoPong: false });
+      const live = raw(url, 'KEEP', 'peer0002');
+      try {
+        await within(Promise.all([dead.opened, live.opened]), 2000, 'join');
+        await within(dead.closed, 1500, 'reap');
+        await sleep(400); // several more ping rounds
+        return live.ws.readyState === WS.OPEN && live.msgs.some((m) => m.sys === 'left' && m.peer === 'peer0001');
+      } finally { dead.ws.terminate(); live.ws.close(); }
+    });
+
+    await step('relay ping: WsTransport measures a round trip through the relay', async () => {
+      const t = new WsTransport(url, { pingMs: 50 });
+      try { await t.open('PING'); await sleep(120); return typeof t.rtt === 'number' && t.rtt >= 0 && t.rtt < 500; } finally { t.close(); }
+    });
+
+    await step('healthz: JSON status, readable cross-origin', async () => {
+      const r = await fetch(`http://127.0.0.1:${srv.port}/healthz`);
+      const j = await r.json();
+      return r.status === 200 && j.ok === true && j.service === 'starwake-relay' && typeof j.rooms === 'number'
+        && r.headers.get('access-control-allow-origin') === '*';
+    });
+
+    await step('static files carry the Server-Timing relay mark', async () => {
+      const r = await fetch(`http://127.0.0.1:${srv.port}/js/net/online.js`);
+      await r.arrayBuffer();
+      return r.status === 200 && /starwake-relay/.test(r.headers.get('server-timing') || '');
+    });
+  } finally {
+    await srv.close();
+  }
+
+  await step('RELAY_ONLY: no game files, but /, /healthz and the relay work', async () => {
+    const s2 = await startServer({ port: 0, host: '127.0.0.1', quiet: true, relayOnly: true });
+    try {
+      const codes = [];
+      for (const p of ['index.html', 'js/net/session.js', '', 'healthz']) {
+        const r = await fetch(`http://127.0.0.1:${s2.port}/${p}`);
+        await r.arrayBuffer();
+        codes.push(r.status);
+      }
+      const t = new WsTransport(`ws://127.0.0.1:${s2.port}/relay`);
+      try { await t.open('ONLY'); } finally { t.close(); }
+      return codes.join(',') === '404,404,200,200' || (console.log('      codes:', codes), false);
+    } finally { await s2.close(); }
+  });
+
+  await step('shutdown with 1001: clients are told the server restarted', async () => {
+    const s3 = await startServer({ port: 0, host: '127.0.0.1', quiet: true });
+    const host = new NetSession({ kind: 'relay', relayUrl: `ws://127.0.0.1:${s3.port}/relay`, name: 'H' });
+    try {
+      await host.host({});
+      const got = waitFor(host, 'closed');
+      await s3.close(1001);
+      return /restarted/.test((await got).reason);
+    } finally { host.leave(); }
+  });
+
+  await step('relay silence: a relay that stops answering pings ends the session', async () => {
+    // A fake relay that joins us, answers one ping, then goes quiet (a dead network path).
+    const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise((r) => wss.once('listening', r));
+    let pongs = 0;
+    wss.on('connection', (ws) => {
+      ws.send(JSON.stringify({ sys: 'peers', peers: [] }));
+      ws.on('message', (d) => { const m = JSON.parse(d); if (m.sys === 'ping' && pongs++ < 1) ws.send(JSON.stringify({ sys: 'pong', n: m.n })); });
+    });
+    const t = new WsTransport(`ws://127.0.0.1:${wss.address().port}/relay`, { pingMs: 40, silenceMs: 200 });
+    try {
+      await t.open('DEAD');
+      const c = await waitFor(t, 'closed', () => true, 2000);
+      return /Lost connection/.test(c.reason) && !t.isOpen;
+    } finally { t.close(); for (const c of wss.clients) c.terminate(); wss.close(); }
+  });
+
+  for (const tag of ['tabs', 'relay']) {
+    const s4 = tag === 'relay' ? await startServer({ port: 0, host: '127.0.0.1', quiet: true }) : null;
+    const opts = s4 ? { kind: 'relay', relayUrl: `ws://127.0.0.1:${s4.port}/relay` } : { kind: 'tabs' };
+    await step(`${tag}: ping table reaches host and client; a silent host ends the client's session`, async () => {
+      const host = new NetSession({ ...opts, name: 'H', pingMs: 50, hostSilenceMs: 400 });
+      const client = new NetSession({ ...opts, name: 'C', pingMs: 50, hostSilenceMs: 400 });
+      try {
+        const code = await host.host({});
+        const hostPing = waitFor(host, 'ping', (d) => typeof d.pings[client.selfId] === 'number', 2000);
+        await client.join(code);
+        await waitFor(client, 'ping', (d) => typeof d.pings[client.selfId] === 'number', 2000);
+        await hostPing;
+        if (host.pings[host.selfId] !== 0) throw new Error('host table');
+        host._send = () => {}; // freeze the host without it saying goodbye
+        const c = await waitFor(client, 'closed', () => true, 2000);
+        return c.reason === 'Lost connection to the host.';
+      } finally { host.leave(); client.leave(); }
+    });
+    if (s4) await s4.close();
+  }
+
+  await step('relay URLs: typed addresses are normalised; junk is refused', () => (
+    normalizeRelayUrl('relay.example.com') === 'wss://relay.example.com/relay'
+    && normalizeRelayUrl('https://relay.example.com') === 'wss://relay.example.com/relay'
+    && normalizeRelayUrl('http://localhost:8080') === 'ws://localhost:8080/relay'
+    && normalizeRelayUrl('localhost:9000') === 'ws://localhost:9000/relay'
+    && normalizeRelayUrl('wss://r.example/custom') === 'wss://r.example/custom'
+    && normalizeRelayUrl('  ') === null && normalizeRelayUrl('ftp://x.example') === null && normalizeRelayUrl('wss://') === null
+  ));
+
+  await step('relay URL order: setting > ?relay= > config > same host > localhost > none', () => {
+    const portfolio = { protocol: 'https:', host: 'travisjohnjones.com', hostname: 'travisjohnjones.com' };
+    const relayHost = { protocol: 'https:', host: 'sw.onrender.com', hostname: 'sw.onrender.com' };
+    const local = { protocol: 'http:', host: 'localhost:3000', hostname: 'localhost' };
+    const r = (o) => { const x = resolveRelayUrl(o); return `${x.source} ${x.url}`; };
+    const cases = [
+      [{ setting: 'wss://mine.example/relay', search: '?relay=wss://p.example', config: 'wss://c.example/relay', location: relayHost, served: true }, 'setting wss://mine.example/relay'],
+      [{ setting: '', search: '?join=ABCD&relay=wss%3A%2F%2Fp.example', config: 'wss://c.example/relay', location: relayHost, served: true }, 'param wss://p.example/relay'],
+      [{ search: '', config: 'wss://c.example/relay', location: relayHost, served: true }, 'config wss://c.example/relay'],
+      [{ config: '', location: relayHost, served: true }, 'same-origin wss://sw.onrender.com/relay'],
+      [{ config: '', location: { protocol: 'http:', host: 'localhost:9000', hostname: 'localhost' }, served: true }, 'same-origin ws://localhost:9000/relay'],
+      [{ config: '', location: local, served: false }, `local ${LOCAL_RELAY}`],
+      [{ config: '', location: null }, `local ${LOCAL_RELAY}`],
+      [{ config: '', location: portfolio, served: false }, 'none null'],
+      [{ config: 'wss://c.example/relay', location: portfolio, served: false }, 'config wss://c.example/relay'],
+    ];
+    const bad = cases.filter(([o, want]) => r(o) !== want);
+    if (bad.length) throw new Error(bad.map(([o, want]) => `${want} != ${r(o)}`).join('; '));
+    return true;
+  });
+
+  await step('servedByRelay reads the Server-Timing mark (assumes yes on insecure http)', () => {
+    const g = (protocol, secure, entries) => ({
+      location: { protocol }, isSecureContext: secure,
+      performance: { getEntriesByType: () => [{ serverTiming: entries }] },
+    });
+    return servedByRelay(g('https:', true, [{ name: 'starwake-relay' }]))
+      && !servedByRelay(g('https:', true, []))
+      && servedByRelay(g('http:', false, undefined))
+      && !servedByRelay(g('file:', true, []))
+      && !servedByRelay({});
+  });
+
+  await step('invite links: build and parse, with relay param and same-browser flag', () => {
+    const loc = { origin: 'https://travisjohnjones.com', pathname: '/starwake/index.html' };
+    const a = inviteLink({ location: loc, code: 'abcd' });
+    const b = inviteLink({ location: loc, code: 'WXYZ', relay: 'wss://r.example/relay' });
+    const c = inviteLink({ location: { origin: 'http://localhost:8080', pathname: '/' }, code: 'QRST', kind: 'tabs' });
+    const pb = parseInvite(new URL(b).search);
+    const pc = parseInvite(new URL(c).search);
+    return a === 'https://travisjohnjones.com/starwake/index.html?join=ABCD'
+      && b.startsWith('https://travisjohnjones.com/starwake/index.html?join=WXYZ&relay=wss%3A%2F%2F')
+      && c === 'http://localhost:8080/index.html?join=QRST&net=tabs'
+      && pb.code === 'WXYZ' && pb.relay === 'wss://r.example/relay' && pb.kind === 'relay'
+      && pc.code === 'QRST' && pc.kind === 'tabs' && pc.relay === null
+      && parseInvite('?join=abcd').code === 'ABCD'
+      && parseInvite('?join=AB1D') === null && parseInvite('?join=ABCDE') === null && parseInvite('') === null
+      && inviteLink({ location: loc, code: 'nope!' }) === null;
+  });
+
+  await step('health URL derives from the relay URL', () => (
+    relayHealthUrl('wss://sw.onrender.com/relay') === 'https://sw.onrender.com/healthz'
+    && relayHealthUrl('ws://localhost:8080/relay') === 'http://localhost:8080/healthz'
+    && relayHealthUrl('nope') === null
+  ));
+}
+
 process.on('unhandledRejection', (err) => { failures++; console.log(`FAIL  unhandled rejection: ${err?.stack || err}`); });
 
 const t0 = Date.now();
@@ -361,6 +645,7 @@ const watchdog = setTimeout(() => { console.log('FAIL  test run exceeded 30s'); 
 try {
   await partA();
   await partB();
+  await partC();
 } catch (err) {
   failures++;
   console.log(`FAIL  crashed: ${err?.stack || err}`);

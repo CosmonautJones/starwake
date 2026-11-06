@@ -19,6 +19,7 @@ import { FlightRace } from './flight/flightRace.js';
 import { HangarStage } from './world/hangarStage.js';
 import { Hud } from './ui/hud.js';
 import { Screens } from './ui/screens.js';
+import { parseInvite } from './net/online.js';
 
 const AI_NAMES = ['Vex', 'Nova', 'Kestrel', 'Rook', 'Aurora', 'Juno', 'Talon', 'Mira', 'Orrin', 'Pike', 'Sable', 'Quill'];
 const params = new URLSearchParams(location.search);
@@ -70,11 +71,20 @@ class App {
     this.autopilot = params.get('autopilot') === '1';
 
     const quick = params.get('quick');
+    const invite = parseInvite(location.search);
     this.ensureAttract().then(() => {
       $('#boot').classList.add('done');
       if (quick === 'race') this.startSoloRace({ trackId: params.get('track') || this.settings.trackId });
       else if (quick === 'battle') this.startSoloBattle({ arenaId: params.get('arena') || this.settings.arenaId });
-      else this.screens.show('title');
+      else if (invite) {
+        // ?join=CODE invite link: go straight to joining. Drop it from the address bar so a
+        // reload doesn't join again (a ?relay= param stays, it's still the relay to use).
+        const clean = new URL(location.href);
+        clean.searchParams.delete('join');
+        clean.searchParams.delete('net');
+        try { history.replaceState(null, '', clean); } catch { /* ignore */ }
+        this.screens.show('lobbyEntry', { invite });
+      } else this.screens.show('title');
     }).catch((err) => this.fatal(err));
   }
 
@@ -225,6 +235,7 @@ class App {
     const battle = game === 'battle';
     this.screens.show('loading', { trackId, game });
     await nextFrame(); await nextFrame();
+    if (mode === 'multi' && !this.net) return; // the connection dropped while loading; 'closed' already went to the menu
     try {
       this.race = new FlightRace({
         renderer: this.renderer, game, teams, hazards, trackId: battle ? getArenaDef(trackId).id : getCourseDef(trackId).id, laps, target, timeLimit,

@@ -360,10 +360,13 @@ export class Hud {
       this.el.alert.classList.toggle('show', !!alert);
     }
 
-    const bk = s.standings.map((r) => r.id + (r.finished ? 'f' : '') + (r.connected ? '' : 'x') + (r.dead ? 'd' : '') + (battle ? r.kills + '/' + r.deaths : '')).join(',');
+    // Online: each human's round trip to the host, from NetSession's ping table.
+    const net = this.race.net;
+    const ping = (id) => (net?.kind === 'relay' && id !== net.lobby?.hostId && net.pings?.[id] != null ? net.pings[id] : null);
+    const bk = s.standings.map((r) => r.id + (r.finished ? 'f' : '') + (r.connected ? '' : 'x') + (r.dead ? 'd' : '') + (battle ? r.kills + '/' + r.deaths : '') + (ping(r.id) ?? '')).join(',');
     if (this.cache.board !== bk) {
       this.cache.board = bk;
-      this.el.board.innerHTML = s.standings.map((r, i) => `<li class="${r.isPlayer ? 'me' : ''}${r.connected ? '' : ' gone'}${r.dead ? ' dead' : ''}" style="--c:${r.color}"><span class="n">${i + 1}</span><span class="nm">${escapeHtml(r.name)}</span>${battle ? `<em class="score">${r.kills}</em>` : r.finished ? '<em class="fin">Finished</em>' : ''}</li>`).join('');
+      this.el.board.innerHTML = s.standings.map((r, i) => `<li class="${r.isPlayer ? 'me' : ''}${r.connected ? '' : ' gone'}${r.dead ? ' dead' : ''}" style="--c:${r.color}"><span class="n">${i + 1}</span><span class="nm">${escapeHtml(r.name)}</span>${ping(r.id) != null ? `<em class="ping">${ping(r.id)} ms</em>` : ''}${battle ? `<em class="score">${r.kills}</em>` : r.finished ? '<em class="fin">Finished</em>' : ''}</li>`).join('');
     }
     const fk = s.killFeed.map((k) => k.text).join('|');
     if (this.cache.feed !== fk) {

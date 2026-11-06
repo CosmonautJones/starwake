@@ -18,6 +18,12 @@
 //   res     { t, r }                        host -> all
 //   bye     { t }                           client leaving
 //   end     { t }                           host leaving (race is over for everyone)
+//   pi      { t, n }                        host -> all, every 2s (ping)
+//   po      { t, n }                        client -> host (pong)
+//   pg      { t, p: { id: ms } }            host -> all: each player's round trip to the host
+//
+// A client that has seen the host's pings treats 20s of silence from the host as a lost
+// connection (an older host that never pings is not held to this).
 //
 // Times in event details (`t` on 'state', `startedAt` on 'start') are local
 // performance.now() values: the moment the message was received (or, for the host's
@@ -31,6 +37,8 @@ export const MAX_PLAYERS = 8;
 const JOIN_TIMEOUT_MS = 4000;
 const HELLO_RETRY_MS = 1000;
 const LOBBY_REBROADCAST_MS = 2000;
+const PING_MS = 2000;
+const HOST_SILENCE_MS = 20000;
 const NAME_MAX = 16;
 const DESIGN_MAX_BYTES = 8 * 1024;
 // Room codes avoid I and O so they can't be confused with 1 and 0 when read aloud.
@@ -79,17 +87,27 @@ function rejectMessage(why, code, hostV) {
 
 export class NetSession extends EventTarget {
   /**
-   * @param {{kind?: 'tabs'|'relay', relayUrl?: string, name?: string, design?: object}} opts
+   * @param {{kind?: 'tabs'|'relay', relayUrl?: string, name?: string, design?: object, transportOpts?: object, pingMs?: number, hostSilenceMs?: number}} opts
    */
-  constructor({ kind = 'tabs', relayUrl, name, design } = {}) {
+  constructor({ kind = 'tabs', relayUrl, name, design, transportOpts, pingMs = PING_MS, hostSilenceMs = HOST_SILENCE_MS } = {}) {
     super();
     this.kind = kind === 'relay' ? 'relay' : 'tabs';
     this.relayUrl = relayUrl || defaultRelayUrl(globalThis.location);
-    this.transport = this.kind === 'relay' ? new WsTransport(this.relayUrl) : new BroadcastTransport();
+    this.transport = this.kind === 'relay' ? new WsTransport(this.relayUrl, transportOpts) : new BroadcastTransport();
     this.selfId = this.transport.selfId;
     this.isHost = false;
     this.code = null;
     this.lobby = null;
+    /** Round trip to the host in ms, per player id (the host's own entry is 0). */
+    this.pings = {};
+
+    this._pingMs = pingMs;
+    this._hostSilenceMs = hostSilenceMs;
+    this._pingSeq = 0;
+    this._pingSent = new Map();   // seq -> sent time (host)
+    this._rtts = {};              // host: latest measured round trip per player
+    this._hostHeardAt = 0;        // client: last message from the host
+    this._hostPings = false;      // client: the host has pinged us at least once
 
     this._name = cleanName(name);
     this._design = cleanDesign(design);
@@ -141,6 +159,7 @@ export class NetSession extends EventTarget {
     this._every(LOBBY_REBROADCAST_MS, () => {
       if (this.lobby?.phase === 'lobby') this._send({ t: 'lobby', l: this.lobby });
     });
+    this._startPings();
     this._lobbyChanged();
     return code;
   }
@@ -327,6 +346,11 @@ export class NetSession extends EventTarget {
       case 'bye':
         this._peerGone(from);
         return;
+      case 'po': {
+        const sent = this._pingSent.get(m.n);
+        if (p && sent !== undefined) this._rtts[from] = Math.max(0, Math.round(now() - sent));
+        return;
+      }
       case 'st':
       case 'fin':
       case 'ev':
@@ -339,6 +363,7 @@ export class NetSession extends EventTarget {
 
   _handleAsClient(from, m) {
     const hostId = this._hostId();
+    if (hostId && from === hostId) this._hostHeardAt = now();
     // Before we've seen a lobby we don't know the host; a lobby that names its sender as
     // host and carries our code is how we learn it.
     if (m.t === 'lobby') {
@@ -365,6 +390,18 @@ export class NetSession extends EventTarget {
       case 'end':
         if (from === hostId) this._fatal('The host left the race.');
         return;
+      case 'pi':
+        if (from !== hostId) return;
+        this._hostPings = true;
+        this._send({ t: 'po', n: m.n }, hostId);
+        return;
+      case 'pg': {
+        if (from !== hostId || !isObj(m.p)) return;
+        const next = {};
+        for (const [id, ms] of Object.entries(m.p)) if (isId(id) && isNum(ms) && ms >= 0) next[id] = Math.min(99999, Math.round(ms));
+        this._setPings(next);
+        return;
+      }
       case 'st':
       case 'fin':
       case 'ev':
@@ -406,6 +443,7 @@ export class NetSession extends EventTarget {
       const { resolve } = this._joinPending;
       this._joinPending = null;
       this.lobby = l;
+      this._startPings();
       this._lobbyChanged();
       resolve(l);
       return;
@@ -446,6 +484,39 @@ export class NetSession extends EventTarget {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /** Host: ping every player and share the table. Client: watch for a silent host. */
+  _startPings() {
+    let lastTick = now();
+    const tick = () => {
+      const t = now();
+      const stalled = t - lastTick > this._pingMs * 2.5; // this tab froze (loading a match): don't blame anyone
+      lastTick = t;
+      if (this.isHost) {
+        const ids = new Set(this.lobby?.players.map((p) => p.id) || []);
+        const table = { [this.selfId]: 0 };
+        for (const [id, ms] of Object.entries(this._rtts)) if (ids.has(id) && id !== this.selfId) table[id] = ms;
+        this._setPings(table);
+        if (this.lobby?.players.length > 1) this._send({ t: 'pg', p: table });
+        const n = ++this._pingSeq;
+        this._pingSent.set(n, t);
+        this._pingSent.delete(n - 5);
+        this._send({ t: 'pi', n });
+      } else {
+        if (stalled || !this._hostHeardAt) this._hostHeardAt = t;
+        if (this._hostPings && t - this._hostHeardAt > this._hostSilenceMs) this._fatal('Lost connection to the host.');
+      }
+    };
+    this._every(this._pingMs, tick);
+    if (this.isHost) tick();
+  }
+
+  _setPings(next) {
+    const same = Object.keys(next).length === Object.keys(this.pings).length
+      && Object.entries(next).every(([id, ms]) => this.pings[id] === ms);
+    this.pings = next;
+    if (!same) this._dispatch('ping', { pings: next });
+  }
 
   _sendHello() {
     this._send({ t: 'hello', v: PROTOCOL_VERSION, name: this._name, design: this._design });
