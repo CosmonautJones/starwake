@@ -23,6 +23,7 @@ import { PlayerAssist, leadPoint } from './assist.js';
 import { SpaceSky } from '../space/sky.js';
 import { RockBelt } from '../space/rocks.js';
 import { buildProp, disposeProp, updateProps } from '../space/props.js';
+import { buildDivider } from '../space/divider.js';
 import { Shatter, Explosions, SpaceDust } from '../space/fx.js';
 import { Trail, Sparks } from '../world/fx.js';
 import { buildCraft } from '../craft/craftMesh.js';
@@ -184,7 +185,11 @@ export class FlightRace {
     for (const it of this.world.items) {
       let obj, tint = null;
       if (it.type === 'mine') obj = mineMesh();
-      else {
+      else if (it.type === 'divider') {
+        const d = buildDivider(it, this.course, { accent: this.def.theme.accent, quality: this.quality });
+        (this._dividers || (this._dividers = [])).push(d);
+        obj = d.object;
+      } else {
         const t = it.type === 'boulder' ? 'asteroid' : it.type === 'boulderIce' ? 'ice' : it.type;
         const prop = this._prop(t, it.seed);
         obj = prop.object;
@@ -1357,6 +1362,7 @@ export class FlightRace {
     for (const e of this.entities) { this.scene.remove(e.craft.root); e.craft.dispose(); e.trails.forEach((t) => t.trail.dispose()); }
     for (const pv of this.pickupViews.values()) { this.scene.remove(pv.group); pv.dispose(); }
     for (const v of this.itemViews.values()) this.scene.remove(v.obj);
+    for (const d of this._dividers || []) d.dispose();
     for (const p of this.propCache.values()) disposeProp(p);
     for (const r of this.ringViews) { this.scene.remove(r.g); r.g.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); }
     this.tunnel?.dispose();

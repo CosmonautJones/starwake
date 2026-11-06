@@ -8,6 +8,10 @@
 //      (denser through pinches, brighter every 4th, a pulse wave running in the race
 //      direction) plus a chunky segmented white start/finish pair at u = 0.
 // update() only writes uniforms: no per-frame allocation.
+//
+// Where another stretch of the same tube runs close by (crossover courses), that stretch's
+// near wall is drawn as a ghosted lattice (no sheen or streaks) and your own wall facing it
+// thins out, so you can see racers through both. Split lanes tint the risky channel's wall.
 
 import * as THREE from 'three';
 
@@ -31,9 +35,10 @@ const _v2 = new THREE.Vector3();
 // ---------------------------------------------------------------- wall shader
 const WALL_VS = /* glsl */`
 attribute vec4 aData;            // u (lap fraction), angle (0..1 around), radius, pinch weight
-varying vec3 vWorld; varying vec3 vN; varying vec4 vData;
+attribute vec2 aX;               // near another stretch of tube (0..1), risky split channel (0..1)
+varying vec3 vWorld; varying vec3 vN; varying vec4 vData; varying vec2 vX;
 void main(){
-  vData = aData;
+  vData = aData; vX = aX;
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vWorld = wp.xyz;
   vN = normalize(mat3(modelMatrix) * normal);
@@ -43,10 +48,10 @@ void main(){
 const WALL_FS = /* glsl */`
 uniform vec3 uColor, uWarn, uShip;
 uniform float uLen, uFlow, uFlowWrap, uShipOn, uBaseR, uSpeedK, uStreakP, uStreakCycles;
-uniform float uRingPitch, uLong, uHexK, uHexCell;
+uniform float uRingPitch, uLong, uHexK, uHexCell, uCamU, uCamOn;
 uniform vec4 uScrape[${SCRAPE_SLOTS}];
 uniform float uScrapeI[${SCRAPE_SLOTS}];
-varying vec3 vWorld; varying vec3 vN; varying vec4 vData;
+varying vec3 vWorld; varying vec3 vN; varying vec4 vData; varying vec2 vX;
 
 float h11(float x){ return fract(sin(x * 127.1 + 311.7) * 43758.5453); }
 
@@ -86,17 +91,23 @@ void main(){
   float farGlow = 1.0 - 0.75 * smoothstep(1500.0, 6000.0, dist);
 
   float pw = pinch * pinch * pinch; pw *= pw;    // only the narrowest stretch is tinted
-  vec3 base = mix(uColor, uWarn, pw * 0.6);
+  vec3 base = mix(uColor, uWarn, max(pw * 0.6, vX.y * 0.5));
+
+  // another stretch of tube close by: is this wall ours (thin it) or the other one (ghost it)?
+  float sep = abs(fract(u - uCamU + 0.5) - 0.5) * uLen;
+  float other = smoothstep(350.0, 600.0, sep) * uCamOn;
+  float ghost = vX.x * other;
+  float thin = vX.x * (1.0 - other);
 
   // ---- structural lattice: rails along the length + faint rings around ----
   float lLong = gridLine(ang * uLong, 0.016);
   float lRing = gridLine(s / uRingPitch, 0.02);
-  float lat = max(lLong, lRing * 0.4);
-  float latVis = mix(0.05, 1.0, fres);
-  vec3 col = base * lat * latVis * 0.085 * nearF * farLat;
+  float lat = max(lLong, lRing * mix(0.4, 0.9, ghost));
+  float latVis = mix(mix(0.05, 0.6, ghost), 1.0, fres);
+  vec3 col = base * lat * latVis * 0.085 * mix(1.0, 1.5, ghost) * nearF * farLat;
 
   // soft grazing sheen: what makes the tube read as a luminous path from afar
-  float sheenK = mix(1.0, 2.6, smoothstep(700.0, 3500.0, dist));
+  float sheenK = mix(1.0, 2.6, smoothstep(700.0, 3500.0, dist)) * (1.0 - 0.9 * ghost) * (1.0 - 0.6 * thin);
   col += base * (pow(1.0 - ndv, 4.0) * 0.05 + fres * 0.006) * sheenK * nearF * farGlow;
   // faint warning fill on the narrowest part of a pinch
   col += uWarn * pw * (0.01 + fres * 0.04) * nearF;
@@ -117,7 +128,7 @@ void main(){
     float on = step(h11(lane * 17.0 + cyc * 3.1), 0.32);
     float body = smoothstep(1.0 - tailLen, 1.0, x) * smoothstep(1.0, 0.985, x);
     float sF = smoothstep(30.0, 130.0, dist) * (1.0 - smoothstep(600.0, 2200.0, dist));
-    col += mix(base, vec3(1.0), 0.15) * across * body * body * on * sF * (0.55 + 0.4 * uSpeedK) * mix(0.5, 1.0, fres);
+    col += mix(base, vec3(1.0), 0.15) * across * body * body * on * sF * (0.55 + 0.4 * uSpeedK) * mix(0.5, 1.0, fres) * (1.0 - ghost);
   }
 
   // ---- start/finish band painted on the wall ----
@@ -175,9 +186,10 @@ const HOOP_VS = /* glsl */`
 attribute vec3 aTan;             // circle tangent at this vertex
 attribute vec4 aHoop;            // u, kind (0 normal, 1 major, 2 finish), angle (0..1), side (-1/+1)
 attribute float aPinch;
+attribute float aNear;           // near another stretch of tube (0..1)
 uniform float uPx;               // world size of one pixel at unit distance
 varying float vAcross; varying float vDim; varying float vU; varying float vKind; varying float vAng;
-varying float vDist; varying float vPinch;
+varying float vDist; varying float vPinch; varying float vNear;
 void main(){
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vec3 toCam = cameraPosition - wp.xyz;
@@ -194,15 +206,15 @@ void main(){
   const float HALO = 3.0;
   wp.xyz += off * aHoop.w * w * HALO;
   vAcross = aHoop.w * HALO;
-  vU = aHoop.x; vKind = kind; vAng = aHoop.z; vDist = d; vPinch = aPinch;
+  vU = aHoop.x; vKind = kind; vAng = aHoop.z; vDist = d; vPinch = aPinch; vNear = aNear;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }`;
 
 const HOOP_FS = /* glsl */`
 uniform vec3 uColor, uWarn;
-uniform float uLen, uWave, uWaveLen;
+uniform float uLen, uWave, uWaveLen, uCamU, uCamOn;
 varying float vAcross; varying float vDim; varying float vU; varying float vKind; varying float vAng;
-varying float vDist; varying float vPinch;
+varying float vDist; varying float vPinch; varying float vNear;
 void main(){
   float x = vAcross;
   float prof = exp(-x * x * 2.2) + 0.1 * exp(-x * x * 0.45);
@@ -222,7 +234,8 @@ void main(){
     col = mix(base, vec3(1.0), vKind * 0.15 + pulse * 0.15) * (b + pulse * 0.8);
   }
   float fade = smoothstep(4.0, 22.0, vDist) * (1.0 - 0.6 * smoothstep(1800.0, 6000.0, vDist));
-  col *= prof * vDim * fade;
+  float other = smoothstep(350.0, 600.0, abs(fract(vU - uCamU + 0.5) - 0.5) * uLen) * uCamOn;
+  col *= prof * vDim * fade * (1.0 - 0.8 * vNear * other);
   gl_FragColor = vec4(col, 1.0);
 }`;
 
@@ -278,6 +291,63 @@ function pinchWeight(def, u) {
   return w;
 }
 
+const ringDist = (a, b) => { const d = Math.abs(a - b) % 1; return Math.min(d, 1 - d); };
+
+/**
+ * Walls near another stretch of the same tube. at(P, R, u) returns the samples of other
+ * stretches close to the ring at u (or null, the usual case); weight() is 1 on a wall a few
+ * metres from the other tube, falling to 0 by 50 m.
+ */
+function nearOther(course) {
+  const S = course.samples, n = course.sampleCount, L = course.length;
+  const rad = new Float32Array(n);
+  for (let i = 0; i < n; i++) rad[i] = course.tunnelRadiusAt(i / n);
+  let maxR = 0;
+  for (let i = 0; i < n; i++) maxR = Math.max(maxR, rad[i]);
+  return {
+    at(P, R, u) {
+      let out = null;
+      const reach = R + maxR + 60;
+      for (let i = 0; i < n; i += 2) {
+        if (ringDist(i / n, u) * L < 400) continue;
+        if (S[i].distanceToSquared(P) < reach * reach) (out || (out = [])).push(i);
+      }
+      if (!out) return null;
+      // densify round the candidates so the weight is smooth
+      const all = new Set();
+      for (const i of out) for (let k = -2; k <= 2; k++) all.add((i + k + n) % n);
+      return [...all];
+    },
+    weight(cand, x, y, z) {
+      let g = Infinity;
+      for (const i of cand) {
+        const s = S[i], dx = x - s.x, dy = y - s.y, dz = z - s.z;
+        g = Math.min(g, Math.sqrt(dx * dx + dy * dy + dz * dz) - rad[i]);
+      }
+      const t = Math.min(1, Math.max(0, (g - 4) / 46));
+      return 1 - t * t * (3 - 2 * t);
+    },
+  };
+}
+
+/** Split lanes: walls of the risky channel get a warning tint. */
+function riskZones(course) {
+  const splits = course.splits || [];
+  return {
+    at(u) {
+      for (const sp of splits) {
+        const d = ringDist(u, sp.at);
+        if (d > sp.half + sp.ramp) continue;
+        const k = d <= sp.half ? 1 : 1 - (d - sp.half) / sp.ramp;
+        const f = course.frameAt(u);
+        const ax = (sp.axis === 'up' ? f.U : f.R).multiplyScalar(sp.side);
+        return { weight: (nx, ny, nz) => { const c = nx * ax.x + ny * ax.y + nz * ax.z; return k * Math.min(1, Math.max(0, (c - 0.35) / 0.4)); } };
+      }
+      return null;
+    },
+  };
+}
+
 export class Tunnel {
   constructor(scene, course, { color = '#5ee7ff', quality = 'high' } = {}) {
     this.scene = scene;
@@ -323,7 +393,13 @@ export class Tunnel {
       uWave: { value: 0 },
       uWaveLen: { value: this._waveLen },
       uPx: { value: 0.001 },
+      uCamU: { value: 0 },
+      uCamOn: { value: 0 },
     };
+    this._camI = -1;
+    this._camLoc = { i: 0, u: 0, c: new THREE.Vector3(), t: new THREE.Vector3() };
+    this._camLast = new THREE.Vector3();
+    this._camOn = 0;
     this._scrapeAge = new Float32Array(SCRAPE_SLOTS).fill(Infinity);
     this._scrapeNext = 0;
 
@@ -336,7 +412,8 @@ export class Tunnel {
     this.twist = fr.twist;
     const rows = n + 1, cols = m + 1;
     const nv = rows * cols;
-    const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), dat = new Float32Array(nv * 4);
+    const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), dat = new Float32Array(nv * 4), ext = new Float32Array(nv * 2);
+    const near = nearOther(course), risk = riskZones(course);
     const cosA = new Float32Array(cols), sinA = new Float32Array(cols);
     for (let j = 0; j < cols; j++) { const a = (j / m) * Math.PI * 2; cosA[j] = Math.cos(a); sinA[j] = Math.sin(a); }
     for (let i = 0; i < rows; i++) {
@@ -345,12 +422,15 @@ export class Tunnel {
       const R = course.tunnelRadiusAt(k / n);
       const pin = pinchWeight(course.def, k / n);
       const P = fr.P[k], Nn = fr.N[k], B = fr.B[k];
+      const cand = near.at(P, R, k / n), rz = risk.at(k / n);
       for (let j = 0; j < cols; j++) {
         const vi = i * cols + j;
         const nx = cosA[j] * Nn.x + sinA[j] * B.x, ny = cosA[j] * Nn.y + sinA[j] * B.y, nz = cosA[j] * Nn.z + sinA[j] * B.z;
         pos[vi * 3] = P.x + nx * R; pos[vi * 3 + 1] = P.y + ny * R; pos[vi * 3 + 2] = P.z + nz * R;
         nor[vi * 3] = nx; nor[vi * 3 + 1] = ny; nor[vi * 3 + 2] = nz;
         dat[vi * 4] = u; dat[vi * 4 + 1] = j / m; dat[vi * 4 + 2] = R; dat[vi * 4 + 3] = pin;
+        if (cand) ext[vi * 2] = near.weight(cand, pos[vi * 3], pos[vi * 3 + 1], pos[vi * 3 + 2]);
+        if (rz) ext[vi * 2 + 1] = rz.weight(nx, ny, nz);
       }
     }
     const idx = nv > 65535 ? new Uint32Array(n * m * 6) : new Uint16Array(n * m * 6);
@@ -364,6 +444,7 @@ export class Tunnel {
     wallGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     wallGeo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     wallGeo.setAttribute('aData', new THREE.BufferAttribute(dat, 4));
+    wallGeo.setAttribute('aX', new THREE.BufferAttribute(ext, 2));
     wallGeo.setIndex(new THREE.BufferAttribute(idx, 1));
     wallGeo.computeBoundingSphere();
     this.wallMat = new THREE.ShaderMaterial({
@@ -384,7 +465,7 @@ export class Tunnel {
     this.hoops = hoops;
     const seg = this.q.hoopSeg;
     const hv = hoops.length * (seg + 1) * 2;
-    const hPos = new Float32Array(hv * 3), hTan = new Float32Array(hv * 3), hDat = new Float32Array(hv * 4), hPin = new Float32Array(hv);
+    const hPos = new Float32Array(hv * 3), hTan = new Float32Array(hv * 3), hDat = new Float32Array(hv * 4), hPin = new Float32Array(hv), hNear = new Float32Array(hv);
     const hIdx = new (hv > 65535 ? Uint32Array : Uint16Array)(hoops.length * seg * 6);
     let vi = 0, ii = 0;
     const Nn = new THREE.Vector3(), B = new THREE.Vector3(), T = new THREE.Vector3(), P = new THREE.Vector3();
@@ -392,19 +473,23 @@ export class Tunnel {
       this._frameAt(h.u, P, T, Nn, B);
       const R = course.tunnelRadiusAt(h.u) * 0.997;
       const pin = pinchWeight(course.def, h.u);
+      const cand = near.at(P, R, h.u);
       const first = vi;
       for (let j = 0; j <= seg; j++) {
         const a = (j / seg) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
         const px = P.x + (c * Nn.x + s * B.x) * R, py = P.y + (c * Nn.y + s * B.y) * R, pz = P.z + (c * Nn.z + s * B.z) * R;
+        const nw = cand ? near.weight(cand, px, py, pz) : 0;
         const tx = -s * Nn.x + c * B.x, ty = -s * Nn.y + c * B.y, tz = -s * Nn.z + c * B.z;
         for (let side = -1; side <= 1; side += 2) {
           hPos[vi * 3] = px; hPos[vi * 3 + 1] = py; hPos[vi * 3 + 2] = pz;
           hTan[vi * 3] = tx; hTan[vi * 3 + 1] = ty; hTan[vi * 3 + 2] = tz;
           hDat[vi * 4] = h.u; hDat[vi * 4 + 1] = h.kind; hDat[vi * 4 + 2] = j / seg; hDat[vi * 4 + 3] = side;
-          hPin[vi] = pin;
+          hPin[vi] = pin; hNear[vi] = nw;
           vi++;
         }
       }
+      // a hoop of a stretch running alongside dims as a whole, so it doesn't clutter the view
+      if (cand) { let mx = 0; for (let v = first; v < vi; v++) mx = Math.max(mx, hNear[v]); hNear.fill(mx, first, vi); }
       for (let j = 0; j < seg; j++) {
         const a = first + j * 2, b = a + 2;
         hIdx[ii++] = a; hIdx[ii++] = a + 1; hIdx[ii++] = b;
@@ -416,6 +501,7 @@ export class Tunnel {
     hoopGeo.setAttribute('aTan', new THREE.BufferAttribute(hTan, 3));
     hoopGeo.setAttribute('aHoop', new THREE.BufferAttribute(hDat, 4));
     hoopGeo.setAttribute('aPinch', new THREE.BufferAttribute(hPin, 1));
+    hoopGeo.setAttribute('aNear', new THREE.BufferAttribute(hNear, 1));
     hoopGeo.setIndex(new THREE.BufferAttribute(hIdx, 1));
     hoopGeo.computeBoundingSphere();
     this.hoopMat = new THREE.ShaderMaterial({
@@ -498,6 +584,17 @@ export class Tunnel {
     this._shipOn += (on - this._shipOn) * Math.min(1, dt * 6);
     if (shipPos) U.uShip.value.copy(shipPos);
     U.uShipOn.value = this._shipOn;
+    // Which stretch of tube we're in (for ghosting the others): hill-climb from last frame,
+    // re-found from scratch after a jump (respawn, new focus ship).
+    if (shipPos) {
+      const c = this.course;
+      if (this._camI < 0 || this._camLast.distanceToSquared(shipPos) > 200 * 200) this._camI = Math.round(c.nearestU(shipPos).u * c.sampleCount);
+      this._camI = c.locate(shipPos, this._camI, this._camLoc, 40).i;
+      this._camLast.copy(shipPos);
+      U.uCamU.value = this._camLoc.u;
+    }
+    this._camOn += ((shipPos ? 1 : 0) - this._camOn) * Math.min(1, dt * 4);
+    U.uCamOn.value = this._camOn;
     if (camera && camera.isPerspectiveCamera) {
       U.uPx.value = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) * 0.5)) / Math.max(1, this.pixelHeight);
     }

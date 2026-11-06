@@ -6,7 +6,7 @@ import { escapeHtml, formatTime, ordinal, $, $$ } from '../core/util.js';
 import { storage, DEFAULT_SETTINGS } from '../core/storage.js';
 import { isLocalRelayUrl } from '../net/transport.js';
 import { resolveRelayUrl, servedByRelay, normalizeRelayUrl, warmRelay, inviteLink } from '../net/online.js';
-import { COURSES as TRACKS, getCourseDef as getTrackDef } from '../flight/courseDefs.js';
+import { getCourseDef as getTrackDef, raceCourses, resolveCourseId } from '../flight/courseDefs.js';
 import { ARENAS, getArenaDef } from '../flight/arenaDefs.js';
 import { BODIES, randomDesign, normalizeDesign } from '../craft/parts.js';
 import { mulberry32 } from '../core/util.js';
@@ -18,6 +18,9 @@ const html = (s) => {
   t.innerHTML = s.trim();
   return t.content.firstElementChild;
 };
+
+/** Course name for lists and headings; the daily run carries its date. */
+const courseName = (def) => (def.daily ? `${def.name} · ${def.dateLabel}` : def.name);
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex="0"]';
 
@@ -147,7 +150,7 @@ export class Screens {
   // ================================================================ screens
   loading({ trackId, game }) {
     const def = game === 'battle' ? getArenaDef(trackId) : getTrackDef(trackId);
-    return { el: html(`<section class="screen loading"><div class="loading-card"><p>${game === 'battle' ? 'Preparing the arena' : 'Opening the wormhole'}</p><h2>${escapeHtml(def.name)}</h2><div class="loading-bar"><i></i></div></div></section>`) };
+    return { el: html(`<section class="screen loading"><div class="loading-card"><p>${game === 'battle' ? 'Preparing the arena' : 'Opening the wormhole'}</p><h2>${escapeHtml(game === 'battle' ? def.name : courseName(def))}</h2><div class="loading-bar"><i></i></div></div></section>`) };
   }
 
   error({ message, fatal }) {
@@ -207,13 +210,15 @@ export class Screens {
     const records = storage.records();
     const designs = storage.allDesigns();
     const sel = storage.getSelectedId();
-    const list = battle ? ARENAS : TRACKS;
-    const curId = battle ? s.arenaId : s.trackId;
+    const list = battle ? ARENAS : raceCourses();
+    // The daily run is picked as 'daily', so the choice carries over to tomorrow's course.
+    const curId = battle ? s.arenaId : (s.trackId === 'daily' || /^daily-/.test(s.trackId) ? 'daily' : s.trackId);
     const rows = list.map((t) => {
       const r = records[t.id] || {};
-      const foot = battle ? `${Math.round(t.radius * 2 / 100) / 10} km across` : r.lap ? `Best lap ${formatTime(r.lap)}` : 'No laps recorded yet';
-      return `<button class="track-choice choice ${t.id === curId ? 'is-on' : ''}" data-track="${t.id}" style="--edge:${t.theme.accent}" aria-pressed="${t.id === curId}">
-        <span class="track-name">${escapeHtml(t.name)}</span>
+      const pickId = t.daily ? 'daily' : t.id;
+      const foot = battle ? `${Math.round(t.radius * 2 / 100) / 10} km across` : r.lap ? `Best lap ${formatTime(r.lap)}` : t.daily ? 'A new course every day' : 'No laps recorded yet';
+      return `<button class="track-choice choice ${pickId === curId ? 'is-on' : ''}" data-track="${pickId}" style="--edge:${t.theme.accent}" aria-pressed="${pickId === curId}">
+        <span class="track-name">${escapeHtml(battle ? t.name : courseName(t))}</span>
         <span class="track-diff" data-d="${t.difficulty}">${t.difficulty}</span>
         <span class="track-blurb">${escapeHtml(t.blurb)}</span>
         <span class="track-best">${foot}</span>
@@ -618,7 +623,7 @@ export class Screens {
     net.relaySource = relay.source;
     this.bindNet(net);
     app.net = net;
-    if (act === 'host') await net.host({ trackId: s.trackId, laps: s.laps, aiFill: Math.min(4, s.aiCount), game: 'race', target: s.battleTarget, timeLimit: s.battleTime, hazards: s.hazards ?? 0.6 });
+    if (act === 'host') await net.host({ trackId: resolveCourseId(s.trackId), laps: s.laps, aiFill: Math.min(4, s.aiCount), game: 'race', target: s.battleTarget, timeLimit: s.battleTime, hazards: s.hazards ?? 0.6 });
     else await net.join(code);
   }
 
@@ -733,13 +738,16 @@ export class Screens {
             <label class="field"><span>Format</span><select data-s="teams"><option value="0">Free-for-all</option><option value="1">Teams (Blue vs Red)</option></select></label>
             <label class="field"><span>Kills to win</span><select data-s="target">${opt([5, 10, 15, 25])}</select></label>
             <label class="field"><span>Time limit</span><select data-s="timeLimit">${opt([180, 300, 480, 600], (v) => `${v / 60} min`)}</select></label>`
-              : `<label class="field"><span>Course</span><select data-s="trackId">${TRACKS.map((t) => `<option value="${t.id}">${escapeHtml(t.name)} (${t.difficulty})</option>`).join('')}</select></label>
+              : `<label class="field"><span>Course</span><select data-s="trackId">${raceCourses().map((t) => `<option value="${t.id}">${escapeHtml(courseName(t))} (${t.difficulty})</option>`).join('')}</select></label>
             <label class="field"><span>Laps</span><select data-s="laps">${opt([1, 2, 3, 5])}</select></label>`}
             <label class="field"><span>${battle ? 'Bots' : 'AI pilots'}</span><select data-s="aiFill">${opt([0, 1, 2, 3, 4, 5, 6])}</select></label>
             <label class="field"><span>Hazards</span><select data-s="hazards"><option value="0">Off</option><option value="0.3">Light</option><option value="0.6">Normal</option><option value="1">Heavy</option></select></label>`;
         }
         $('[data-s=game]', el).value = sig;
-        $('[data-s=trackId]', el).value = place.id;
+        const trackSel = $('[data-s=trackId]', el);
+        // A lobby opened before midnight (UTC) keeps yesterday's daily run on offer.
+        if (!battle && ![...trackSel.options].some((o) => o.value === place.id)) trackSel.insertAdjacentHTML('beforeend', `<option value="${place.id}">${escapeHtml(courseName(place))} (${place.difficulty})</option>`);
+        trackSel.value = place.id;
         if (battle) { $('[data-s=teams]', el).value = lobby.teams ? '1' : '0'; $('[data-s=target]', el).value = String(lobby.target ?? 10); $('[data-s=timeLimit]', el).value = String(lobby.timeLimit ?? 300); }
         else $('[data-s=laps]', el).value = String(lobby.laps);
         $('[data-s=aiFill]', el).value = String(lobby.aiFill);
@@ -747,7 +755,7 @@ export class Screens {
       } else {
         k('settings').innerHTML = battle
           ? `<dl class="readonly"><dt>Mode</dt><dd>Battle${lobby.teams ? ' — teams' : ''}</dd><dt>Arena</dt><dd>${escapeHtml(place.name)}</dd><dt>Kills to win</dt><dd>${lobby.target ?? 10}</dd><dt>Time limit</dt><dd>${Math.round((lobby.timeLimit ?? 300) / 60)} min</dd><dt>Bots</dt><dd>${lobby.aiFill}</dd></dl>`
-          : `<dl class="readonly"><dt>Mode</dt><dd>Wormhole race</dd><dt>Course</dt><dd>${escapeHtml(place.name)} <small>${place.difficulty}</small></dd><dt>Laps</dt><dd>${lobby.laps}</dd><dt>AI pilots</dt><dd>${lobby.aiFill}</dd></dl>`;
+          : `<dl class="readonly"><dt>Mode</dt><dd>Wormhole race</dd><dt>Course</dt><dd>${escapeHtml(courseName(place))} <small>${place.difficulty}</small></dd><dt>Laps</dt><dd>${lobby.laps}</dd><dt>AI pilots</dt><dd>${lobby.aiFill}</dd></dl>`;
       }
       const me = lobby.players.find((p) => p.id === net.selfId);
       k('readyBtn').hidden = net.isHost;
@@ -767,7 +775,7 @@ export class Screens {
       if (!key || !net.isHost) return;
       if (key === 'game') {
         const g = e.target.value === 'battle' ? 'battle' : 'race';
-        net.updateSettings({ game: g, trackId: g === 'battle' ? app.settings.arenaId : app.settings.trackId });
+        net.updateSettings({ game: g, trackId: g === 'battle' ? app.settings.arenaId : resolveCourseId(app.settings.trackId) });
       } else if (key === 'teams') net.updateSettings({ teams: e.target.value === '1' });
       else net.updateSettings({ [key]: key === 'trackId' ? e.target.value : Number(e.target.value) });
     });

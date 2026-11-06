@@ -8,6 +8,15 @@
 // features: what fills the tunnel and the space around it. `at` / `from`..`to` are
 //           fractions of the lap. Breakables and pickups are placed with a seeded RNG.
 // theme:    sky/lighting (see js/space/sky.js for the schema) plus accent colours.
+// crossings: intentional close passes between far-apart stretches of tube, { a, b, span,
+//           clearance }: stretches round a and b (+-span) may come within `clearance` metres
+//           wall to wall (tools/check-courses.mjs fails any other close pass).
+// splits:   split lanes, { at, length, side, axis, offset, width }: the tube widens round a
+//           solid divider into a wide safe channel and a tight risky one (see Course._initSplits).
+//
+// Look courses up by id with courseDefById(): it also returns generated daily courses.
+
+import { dailyCourseId, dailyCourseDef, isDailyId } from './daily.js';
 
 export const COURSES = [
   {
@@ -124,8 +133,120 @@ export const COURSES = [
       ring: '#7cf2ff', ringNext: '#ffffff', accent: '#7cf2ff',
     },
   },
+  {
+    id: 'braid',
+    name: 'Helix Braid',
+    difficulty: 'Hard',
+    blurb: 'The tube doubles back and twists round itself. Rivals flash past on the other side of the wall.',
+    tunnel: { radius: 56, pinches: [{ at: 0.5, len: 0.04, radius: 40 }, { at: 0.93, len: 0.035, radius: 42 }] },
+    ringRadius: 13,
+    ringSpacing: 280,
+    // Two strands of tube a few metres apart twist a full turn round each other (one passes
+    // over, then under, the other), joined by a loop at each end.
+    points: [
+      [0, 0, 0], [324, 80, -72], [432, 140, -342], [146, 140, -590], [116, 120, -810], [109, 156, -890], [88, 184, -969],
+      [57, 200, -1047], [21, 200, -1122], [-14, 184, -1196], [-44, 156, -1269], [-65, 120, -1343], [-76, 84, -1419],
+      [-79, 56, -1498], [-77, 40, -1580], [-75, 40, -1663], [-79, 56, -1746], [-92, 84, -1827], [-119, 120, -1903],
+      [-182, 150, -2116], [-42, 230, -2372], [-195, 280, -2579], [-493, 240, -2583], [-727, 140, -2379], [-681, 60, -2124],
+      [-349, 90, -2040], [-232, 120, -1852], [-196, 138, -1784], [-151, 153, -1719], [-101, 161, -1654], [-51, 161, -1588],
+      [-4, 153, -1519], [33, 138, -1446], [57, 120, -1369], [66, 102, -1289], [63, 87, -1207], [49, 79, -1125],
+      [30, 79, -1044], [11, 87, -965], [-3, 102, -887], [-8, 120, -810], [-38, 100, -590], [-324, 30, -423], [-288, -30, -162],
+    ],
+    crossings: [{ a: 0.26, b: 0.755, span: 0.11, clearance: 7 }],
+    features: [
+      { type: 'beacons', from: 0.0, to: 0.06, every: 0.02 },
+      { type: 'station', at: 0.5 },
+      { type: 'field', from: 0.18, to: 0.34, count: 34, kind: 'asteroid', spread: [20, 120], size: [3, 8] },
+      { type: 'scatter', prop: 'crystal', from: 0.68, to: 0.82, count: 7, spread: [25, 90] },
+      { type: 'mines', from: 0.39, to: 0.46, count: 10, spread: [6, 36] },
+      { type: 'boulders', from: 0.55, to: 0.64, count: 8, size: [24, 54], clear: 56 },
+      { type: 'scatter', prop: 'cargo', from: 0.84, to: 0.97, count: 6, spread: [25, 90] },
+      { type: 'landmark', prop: 'monolith', at: 0.08, side: -1, offset: 150, scale: 1.8 },
+    ],
+    belts: [
+      { center: [-200, 100, -1300], radius: 2400, thickness: 700, count: 700, inner: 1500, kind: 'rock', shape: 'cloud', sizeRange: [6, 70] },
+    ],
+    theme: {
+      space: '#05040c', nebula: ['#4a2f9f', '#9f2f7a'], nebulaStrength: 0.55, starDensity: 1.3,
+      sun: { dir: [-0.35, 0.6, 0.7], color: '#f2e8ff', intensity: 3.2, size: 1 },
+      ambient: '#3a3460', ambientIntensity: 0.55,
+      fog: { color: '#0e0a1e', density: 0.00012 },
+      planets: [
+        { pos: [4800, 1200, -6600], radius: 2600, type: 'gas', color: '#7f74d9', color2: '#3a2f7a', atmosphere: '#c8b0ff', ring: { inner: 1.4, outer: 2.1, color: '#c9b8f0', tilt: [0.5, 0, -0.3] } },
+        { pos: [-5600, -1600, 2400], radius: 420, type: 'rocky', color: '#a89aa0', color2: '#4a4048', atmosphere: '#ffd0f0' },
+      ],
+      ring: '#a99bff', ringNext: '#ffffff', accent: '#a99bff',
+    },
+  },
+  {
+    id: 'forks',
+    name: 'Rift Forks',
+    difficulty: 'Medium',
+    blurb: 'Rock spines split the tube three times. Take the wide channel, or the tight one with the big pad.',
+    tunnel: { radius: 62, pinches: [{ at: 0.67, len: 0.035, radius: 44 }] },
+    ringRadius: 15,
+    ringSpacing: 300,
+    points: [
+      [0, 0, 0], [20, 20, -450], [110, 50, -900], [380, 70, -1230], [800, 40, -1330], [1150, 0, -1320],
+      [1500, -30, -1290], [1820, -70, -1120], [1950, -110, -760], [1960, -120, -420], [1920, -100, -60],
+      [1700, -30, 260], [1300, 40, 360], [950, 70, 370], [560, 60, 380], [250, 30, 330], [40, 10, 170],
+    ],
+    splits: [
+      { at: 0.312, length: 360, side: 1, axis: 'right' },
+      { at: 0.543, length: 340, side: -1, axis: 'up' },
+      { at: 0.793, length: 380, side: -1, axis: 'right' },
+    ],
+    features: [
+      { type: 'beacons', from: 0.0, to: 0.06, every: 0.02 },
+      { type: 'station', at: 0.67 },
+      { type: 'field', from: 0.07, to: 0.24, count: 34, kind: 'asteroid', spread: [20, 140], size: [3, 10] },
+      { type: 'boulders', from: 0.38, to: 0.49, count: 8, size: [26, 60], clear: 62 },
+      { type: 'scatter', prop: 'cargo', from: 0.6, to: 0.64, count: 5, spread: [25, 100] },
+      { type: 'field', from: 0.7, to: 0.73, count: 10, kind: 'asteroid', spread: [20, 120], size: [3, 9] },
+      { type: 'scatter', prop: 'crystal', from: 0.86, to: 0.96, count: 6, spread: [30, 100] },
+      { type: 'wreck', at: 0.47, side: 1, offset: 210 },
+      { type: 'landmark', prop: 'monolith', at: 0.9, side: 1, offset: 150, scale: 2 },
+    ],
+    belts: [
+      { center: [900, -40, -500], radius: 2400, thickness: 800, count: 800, inner: 1500, kind: 'rock', shape: 'cloud', sizeRange: [6, 80] },
+    ],
+    theme: {
+      space: '#06060a', nebula: ['#6b3a1f', '#1f5a6b'], nebulaStrength: 0.48, starDensity: 1.1,
+      sun: { dir: [0.5, 0.45, 0.7], color: '#ffe8cc', intensity: 3.3, size: 1.1 },
+      ambient: '#3a3a44', ambientIntensity: 0.52,
+      fog: { color: '#120e0c', density: 0.00014 },
+      planets: [
+        { pos: [-4400, -1800, -6000], radius: 2900, type: 'rocky', color: '#b0764a', color2: '#4a2a1a', atmosphere: '#ffb88a' },
+        { pos: [5200, 2200, 1800], radius: 380, type: 'ice', color: '#c8e4ff', color2: '#5a80a8', atmosphere: '#e0f4ff' },
+      ],
+      ring: '#6dffd8', ringNext: '#ffffff', accent: '#6dffd8',
+    },
+  },
 ];
 
-export function getCourseDef(id) {
+/** The 'daily' alias, or a daily id, resolves to a generated course; anything unknown to Corona Run. */
+export function courseDefById(id) {
+  if (id === 'daily') return dailyCourseDef(dailyCourseId());
+  if (isDailyId(id)) return dailyCourseDef(id);
   return COURSES.find((c) => c.id === id) || COURSES[0];
 }
+
+/** Kept for existing callers: same as courseDefById. */
+export const getCourseDef = courseDefById;
+
+/** Is this id a course we can build (built-in, 'daily' or a daily id)? */
+export function isCourseId(id) {
+  return id === 'daily' || isDailyId(id) || COURSES.some((c) => c.id === id);
+}
+
+/** The concrete id to race or send to other players ('daily' becomes today's daily id). */
+export function resolveCourseId(id) {
+  return courseDefById(id).id;
+}
+
+/** Courses to offer in course pickers: the built-ins, then the daily run for `date`. */
+export function raceCourses(date = new Date()) {
+  return [...COURSES, courseDefById(dailyCourseId(date))];
+}
+
+export { dailyCourseId, isDailyId };

@@ -1145,7 +1145,7 @@ export class Hazards {
       const course = this.course;
       for (const s of ships) {
         let info = this.shipInfo.get(s.id);
-        if (!info) { info = { i: Math.round(course.nearestU(s.sim.pos).u * course.sampleCount), u: 0 }; this.shipInfo.set(s.id, info); }
+        if (!info) { info = { i: Number.isInteger(s.sim.trackI) ? s.sim.trackI : Math.round(course.nearestU(s.sim.pos).u * course.sampleCount), u: 0 }; this.shipInfo.set(s.id, info); }
         const loc = course.locate(s.sim.pos, info.i, _loc);
         info.i = loc.i; info.u = loc.u;
       }

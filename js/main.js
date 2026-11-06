@@ -15,7 +15,7 @@ import { Input } from './core/input.js';
 import { RaceFeel } from './core/feel.js';
 import { mulberry32, randomId, $ } from './core/util.js';
 import { randomDesign, normalizeDesign } from './craft/parts.js';
-import { COURSES, getCourseDef } from './flight/courseDefs.js';
+import { COURSES, getCourseDef, isCourseId, resolveCourseId } from './flight/courseDefs.js';
 import { ARENAS, getArenaDef } from './flight/arenaDefs.js';
 import { FlightRace } from './flight/flightRace.js';
 import { HangarStage } from './world/hangarStage.js';
@@ -31,7 +31,7 @@ class App {
   constructor() {
     this.settings = storage.loadSettings();
     loadCareer(); // migrate old personal bests into medals before any new race is recorded
-    if (!COURSES.some((c) => c.id === this.settings.trackId)) this.settings.trackId = COURSES[0].id;
+    if (!isCourseId(this.settings.trackId)) this.settings.trackId = COURSES[0].id;
     if (!ARENAS.some((a) => a.id === this.settings.arenaId)) this.settings.arenaId = ARENAS[0].id;
     this.canvas = $('#scene');
     this.uiRoot = $('#ui');
@@ -189,7 +189,7 @@ class App {
 
   async startSoloRace(opts = {}) {
     const s = this.settings;
-    const trackId = opts.trackId || s.trackId;
+    const trackId = resolveCourseId(opts.trackId || s.trackId); // 'daily' -> today's daily id
     const aiCount = opts.aiCount ?? s.aiCount;
     const laps = opts.laps ?? s.laps;
     const seed = (Math.random() * 1e9) | 0;

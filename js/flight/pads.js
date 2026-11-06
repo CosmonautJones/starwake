@@ -53,6 +53,13 @@ export class BoostPads {
       const u = (k + 0.3 + rng() * 0.3) / PADS.big.perLap;
       place(u, PADS.big.lane, rng() * Math.PI * 2, true);
     }
+    // Split lanes: the tight risky channel carries a big pad halfway along the divider.
+    for (const sp of course.splits || []) {
+      const f = course.frameAt(sp.at);
+      const ax = sp.axis === 'up' ? f.U : f.R;
+      const pos = f.pos.clone().addScaledVector(ax, sp.riskLane);
+      this.pads.push({ id: this.pads.length, u: sp.at, pos, big: true, radius: PADS.big.radius, normal: f.T, split: sp.index });
+    }
     this.pads.sort((a, b) => a.u - b.u);
     this.pads.forEach((p, i) => { p.id = i; });
   }
