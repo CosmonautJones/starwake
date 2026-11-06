@@ -637,3 +637,24 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .hud[data-reduce-motion="1"] *, .hud[data-reduce-motion="1"] *::before, .hud[data-reduce-motion="1"] *::after { animation: none !important; transition: none !important; }
 
 .field-note { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; line-height: 1.35; padding-left: 4px; }
+
+/* ============================================================= ghosts + replays */
+.field-pair { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 12px; }
+.hud-ghost { margin-top: 6px; display: flex; align-items: baseline; gap: 8px; padding: 2px 12px; border-radius: 999px; background: rgba(6, 8, 26, 0.55); font-size: clamp(12px, 1.8vh, 14px); font-weight: 600; color: #b9f3ff; }
+.hud-ghost b { font: 700 clamp(14px, 2.2vh, 18px) var(--display); }
+.hud-ghost[data-tone="ahead"] b { color: var(--good); }
+.hud-ghost[data-tone="behind"] b { color: var(--nitro); }
+.hud > .hud-replay { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
+.hud.is-replay > .hud-replay { opacity: 1; }
+.hud.is-replay > :not(.hud-replay) { opacity: 0 !important; }
+.rp-bar { position: absolute; left: 0; right: 0; height: 8vh; background: #000; transform: scaleY(0); transition: transform 0.4s var(--ease-out); }
+.rp-top { top: 0; transform-origin: top; }
+.rp-bot { bottom: 0; transform-origin: bottom; }
+.hud.is-replay .rp-bar { transform: scaleY(1); }
+.rp-tag { position: absolute; top: calc(8vh + 16px); left: var(--hx); display: flex; align-items: baseline; gap: 10px; padding: 4px 14px; border-radius: 999px; background: rgba(6, 8, 26, 0.6); border: 1px solid var(--edge); }
+.rp-tag b { font: 700 13px var(--display); color: var(--ion); letter-spacing: 0.04em; }
+.rp-tag b::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--hot); vertical-align: 1px; animation: rp-blink 1.2s steps(2, start) infinite; }
+.rp-tag em { font-style: normal; font-weight: 600; font-size: 13.5px; color: #c4ceef; }
+.rp-tag em:empty { display: none; }
+.rp-skip { position: absolute; bottom: calc(8vh + 14px); right: var(--hx); font-size: 13px; font-weight: 500; color: rgba(196, 206, 239, 0.75); }
+@keyframes rp-blink { to { visibility: hidden; } }

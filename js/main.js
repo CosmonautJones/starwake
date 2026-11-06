@@ -22,6 +22,7 @@ import { Hud } from './ui/hud.js';
 import { Screens } from './ui/screens.js';
 import { parseInvite } from './net/online.js';
 
+const SKIP_PAD = ['confirm', 'back', 'pause', 'fire', 'missile', 'reset', 'camera', 'dodge'];
 const AI_NAMES = ['Vex', 'Nova', 'Kestrel', 'Rook', 'Aurora', 'Juno', 'Talon', 'Mira', 'Orrin', 'Pike', 'Sable', 'Quill'];
 const params = new URLSearchParams(location.search);
 
@@ -59,6 +60,10 @@ class App {
     window.addEventListener('error', (e) => this.toast(`Something went wrong: ${e.message}`, 'error'));
     window.addEventListener('unhandledrejection', (e) => this.toast(`Something went wrong: ${e.reason?.message || e.reason}`, 'error'));
     window.addEventListener('beforeunload', () => this.net?.leave());
+    // Replays skip on any fresh key press or click (gamepad buttons are read in frame()).
+    const skipReq = (e) => { if (!e.repeat) this._skipReq = true; };
+    window.addEventListener('keydown', skipReq);
+    window.addEventListener('pointerdown', skipReq);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && this.race && !this.paused && this.race.mode === 'solo' && !this.race.results) this.pause(true);
     });
@@ -243,6 +248,7 @@ class App {
         renderer: this.renderer, game, teams, hazards, trackId: battle ? getArenaDef(trackId).id : getCourseDef(trackId).id, laps, target, timeLimit,
         roster, mode, seed, net: mode === 'multi' ? this.net : null,
         settings: { ...this.settings }, autopilot: this.autopilot, goAt,
+        ghost: mode === 'solo' && !battle && this.settings.ghost ? storage.loadGhost(getCourseDef(trackId).id, laps) : null,
         onEvent: (e) => this.onRaceEvent(e),
       });
     } catch (err) {
@@ -362,6 +368,7 @@ class App {
     const rank = me ? results.indexOf(me) + 1 : null;
     let records = { raceBest: false, lapBest: false };
     if (me && !me.dnf && !this.race.battle) records = storage.submitRecord(this.race.def.id, this.race.laps, me.time, me.bestLap);
+    if (me && !me.dnf && this.race.ghostRun?.result) storage.saveGhost(this.race.ghostRun.result);
     this.audio.play(rank === 1 ? 'win' : 'lose');
     this.audio.duck(true);
     this.input.setRaceMode(false);
@@ -380,7 +387,17 @@ class App {
       });
     } catch (err) { console.warn('Career update skipped:', err); }
     this.run = null;
-    this.screens.overlay('results', { results, rank, records, mode: this.race.mode, trackName: this.race.def.name, game: this.race.game, teams, career });
+    this.resultsProps = { results, rank, records, mode: this.race.mode, trackName: this.race.def.name, game: this.race.game, teams, career };
+    this.screens.overlay('results', this.resultsProps);
+  }
+
+  /** Results "Watch highlights": play the clips, then bring the results back. */
+  watchHighlights() {
+    const race = this.race, props = this.resultsProps;
+    if (!race?.replays || race.replays.playing || !props) return;
+    this.screens.closeOverlay();
+    const back = () => { if (this.race === race) this.screens.overlay('results', props); };
+    if (!race.replays.playHighlights(back)) back();
   }
 
   toast(text, tone = '') {
@@ -410,7 +427,7 @@ class App {
     // Global UI navigation (gamepad) and back.
     this.screens.handleInput(this.input);
 
-    if (this.race && this.stage === this.race && !this.race.results) {
+    if (this.race && this.stage === this.race && !this.race.results && !this.race.replays?.playing) {
       if (this.input.pressed('pause') || (this.input.pressed('lockLost') && !this.paused)) this.pause(!this.paused);
       // Capture the mouse on the first click into the race (where the browser allows it).
       if (!this.paused && this.settings.lockMouse && !this.input.pointerLocked && this.input.pressed('fire') && this.input.activeDevice !== 'gamepad') this.input.requestPointerLock(this.canvas);
@@ -422,6 +439,10 @@ class App {
         }
       }
     }
+
+    const replays = this.race?.replays;
+    if (replays?.playing && (this._skipReq || SKIP_PAD.some((a) => this.input.pressed(a)))) replays.skip();
+    this._skipReq = false;
 
     try {
       const live = this.race && this.stage === this.race;

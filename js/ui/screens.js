@@ -232,7 +232,10 @@ export class Screens {
             <div class="field"><span>Hazards</span>${seg('hazards', [0, 0.3, 0.6, 1], [0, 0.3, 0.6, 1].includes(s.hazards) ? s.hazards : 0.6, (v) => ({ 0: 'Off', 0.3: 'Light', 0.6: 'Normal', 1: 'Heavy' })[v])}</div>` : `
             <div class="field"><span>Opponents</span>${seg('aiCount', [0, 1, 3, 5, 7], s.aiCount, (n) => (n === 0 ? 'Time trial' : String(n)))}</div>
             <div class="field"><span>Skill</span>${seg('difficulty', ['easy', 'normal', 'hard'], s.difficulty, cap)}</div>
-            <div class="field"><span>Laps</span>${seg('laps', [1, 2, 3, 5], s.laps)}</div>
+            <div class="field-pair">
+              <div class="field"><span>Laps</span>${seg('laps', [1, 2, 3, 5], s.laps)}</div>
+              <div class="field"><span>Ghost</span>${seg('ghost', [1, 0], s.ghost ? 1 : 0, (v) => (v ? 'On' : 'Off'))}</div>
+            </div>
             <div class="field"><span>Hazards</span>${seg('hazards', [0, 0.3, 0.6, 1], [0, 0.3, 0.6, 1].includes(s.hazards) ? s.hazards : 0.6, (v) => ({ 0: 'Off', 0.3: 'Light', 0.6: 'Normal', 1: 'Heavy' })[v])}</div>
             <div class="field"><span>Track assist</span>${seg('trackAssist', assistLevels, assistCur, (v) => ({ 0: 'Off', 0.4: 'Light', 0.7: 'Normal', 1: 'Strong' })[v])}</div>`;
     const el = html(`
@@ -262,7 +265,8 @@ export class Screens {
       const assist = (s.trackAssist ?? 0.7) <= 0 ? 'Track assist is off.' : 'Centre the mouse and the ship follows the tunnel by itself.';
       const hz = s.hazards > 0 ? ' Watch for drifting plasmoids and Vesk ambushes.' : '';
       $('[data-k=medals]', el).innerHTML = targetsPanel(getTrackDef(s.trackId), s.laps);
-      note.textContent = (s.aiCount === 0 ? 'Time trial: just you and the clock. Beat the medal times. ' : `${s.aiCount} AI pilot${s.aiCount > 1 ? 's' : ''} on ${s.difficulty} skill. `) + assist + ' Fly through the amber gates for extra boost.' + hz;
+      const ghost = s.ghost && storage.loadGhost(s.trackId, s.laps) ? ' Your best run here races as a ghost.' : '';
+      note.textContent = (s.aiCount === 0 ? 'Time trial: just you and the clock. Beat the medal times. ' : `${s.aiCount} AI pilot${s.aiCount > 1 ? 's' : ''} on ${s.difficulty} skill. `) + assist + ' Fly through the amber gates for extra boost.' + hz + ghost;
     };
     updateNote();
     el.addEventListener('click', (e) => {
@@ -459,12 +463,14 @@ export class Screens {
             ${mode === 'multi'
               ? (isHost ? '<button class="primary" data-act="lobby" autofocus>Back to lobby</button>' : '<p class="note waiting">Waiting for the host to return to the lobby…</p>') + '<button data-act="leave" data-sound="back">Leave</button>'
               : `<button class="primary" data-act="again" autofocus>${battle ? 'Fight again' : 'Race again'}</button><button data-act="hangar">Hangar</button><button data-act="menu" data-sound="back">Main menu</button>`}
+            ${app.race?.replays?.hasHighlights ? '<button data-act="highlights">Watch highlights</button>' : ''}
           </div>
         </div>
       </section>`);
     el.addEventListener('click', (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'again') app.restartSolo();
+      if (act === 'highlights') app.watchHighlights();
       if (act === 'hangar') app.backToAttract().then(() => this.show('hangar'));
       if (act === 'menu') app.backToAttract().then(() => this.show('title'));
       if (act === 'lobby') { app.net.backToLobby(); app.backToAttract().then(() => this.show('lobby')); }
