@@ -42,6 +42,11 @@ const HIT_STOP = 0.35, HIT_STOP_SCALE = 0.35; // solo only: a beat of slow time 
 
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _x = new THREE.Vector3(), _q = new THREE.Quaternion();
 const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2();
+const _up = new THREE.Vector3();
+// Slipstream window behind a rival, metres: how close, how far, how far off the line.
+const WAKE = { near: 10, far: 95, width: 5.5 };
+const WAKE_TICK = 1 / 40;
+const DRIFT_SPARK = new THREE.Color('#ffd9a0');
 const _lookQ = new THREE.Quaternion(), _lookE = new THREE.Euler(0, 0, 0, 'YXZ');
 const FWD = new THREE.Vector3(0, 0, -1);
 const FX_FULL = { streaks: 1, blur: 1, shake: 1, fov: 1 };
@@ -290,6 +295,13 @@ export class FlightRace {
     const noz = [...craft.nozzles].sort((a, b) => a.pos.x - b.pos.x);
     const pick = noz.length > 1 ? [noz[0], noz[noz.length - 1]] : noz;
     for (const n of pick) e.trails.push({ nozzle: n, trail: new Trail(this.scene, craft.glowColor, { length: this.quality === 'low' ? 14 : 22, width: n.r * 0.4, style: craft.design.trail, color2: craft.design.colors.secondary }) });
+    if (!this.battle) {
+      // The wake: two crossed ribbons so it reads as a tube from any angle behind (one on Low).
+      const mk = () => new Trail(this.scene, craft.glowColor, { length: 30, width: 2.6, style: 'wake' });
+      e.wake = this.quality === 'low' ? [mk()] : [mk(), mk()];
+      for (const w of e.wake) { w.mesh.visible = false; w.mat.uniforms.uNear.value = 3.5; }
+      e.wakeT = 0; e.wakeK = 0;
+    }
     this.entities.push(e);
     this._placeMesh(e, 0);
   }
@@ -412,7 +424,7 @@ export class FlightRace {
     } else {
       sim.pos.addScaledVector(sim.vel, Math.min(0.25, (renderT - a.t) / 1000));
     }
-    sim.boosting = !!A.b; sim.supersonic = A.b === 2; sim.gateIdx = A.c; sim.lap = A.l;
+    sim.boosting = !!A.b; sim.supersonic = A.b === 2; sim.drifting = A.dr === 1; sim.gateIdx = A.c; sim.lap = A.l;
     if (A.dg && !e._dg) e.dodgeAnim = { t: 0, dir: Math.sign(A.dg) };
     e._dg = A.dg || 0;
     sim.hull = A.h; sim.shield = A.s; sim.ghost = A.g ? 1 : 0;
@@ -488,6 +500,7 @@ export class FlightRace {
   _step(dt, racing, input) {
     const ships = this.entities;
     const targets = this._targetList();
+    if (!this.battle) this._slipstream(racing);
     for (const e of ships) {
       if (!e.local) continue;
       const aiFlying = e.ai && (e.kind === 'ai' || this.autopilot || e.sim.finished);
@@ -560,6 +573,30 @@ export class FlightRace {
       for (const e of ships) if (e.connected) live.push(e);
       this.hz.update(dt, live, this.matchTime());
       this._hazardEvents();
+    }
+  }
+
+  /** Who is sitting in whose wake: sets sim.tow (the ship does the rest) and e.towOn. */
+  _slipstream(racing) {
+    for (const e of this.entities) {
+      if (!e.local) continue;
+      e.towOn = null; e.sim.tow = false;
+      if (!racing || !e.connected || e.sim.dead || e.sim.finished) continue;
+      const fwd = _v.set(0, 0, -1).applyQuaternion(e.sim.quat);
+      let best = null, bestD = Infinity;
+      for (const r of this.entities) {
+        if (r === e || !r.connected || r.sim.dead || r.sim.ghost > 0) continue;
+        const rs = r.sim.vel.length();
+        if (rs < r.sim.p.topSpeed * 0.45) continue;                     // a parked ship punches no hole
+        _w.subVectors(r.sim.pos, e.sim.pos);
+        const along = _w.dot(fwd);
+        if (along < WAKE.near || along > WAKE.far || along >= bestD) continue;
+        const off = Math.sqrt(Math.max(0, _w.lengthSq() - along * along));
+        if (off > WAKE.width + along * 0.06) continue;                   // the wake spreads a little with distance
+        if (r.sim.vel.dot(fwd) < rs * 0.7) continue;                     // crossing traffic doesn't count
+        best = r; bestD = along;
+      }
+      if (best) { e.towOn = best; e.sim.tow = true; }
     }
   }
 
@@ -874,6 +911,13 @@ export class FlightRace {
           this._send('die', { id: e.id, by: ev.by || null, c: ev.cause || null });
         }
         if (ev.type === 'scrape' && this.tunnel && this._near(ev.point, 600)) { this.tunnel.scrape(ev.point, ev.intensity); this.scrapeFx?.hit(e, ev.point, ev.intensity); }
+        if (ev.type === 'driftBoost') {
+          // Kick: a burst of the craft's glow off the tail.
+          _w.set(0, 0, 3).applyQuaternion(e.sim.quat).add(e.sim.pos);
+          this.sparks.emit(_w, _x.copy(e.sim.vel).multiplyScalar(0.5), 10 + ev.tier * 8, e.craft.glowColor, { spread: 30 + ev.tier * 12, size: 0.7, life: 0.4 });
+          if (isPlayer) { this.shake = Math.max(this.shake, 0.12 * ev.tier); this.onEvent({ type: 'driftBoost', tier: ev.tier }); }
+        }
+        if (ev.type === 'driftStart' && isPlayer) this.onEvent({ type: 'driftStart' });
         if (ev.type === 'dodge') { e.dodgeAnim = { t: 0, dir: ev.dir }; if (isPlayer) this.onEvent({ type: 'dodge', dir: ev.dir }); }
         if (ev.type === 'supersonic' && (isPlayer || this._near(e.sim.pos, 300))) this.onEvent({ type: 'supersonic', player: isPlayer, distance: this._distN(e.sim.pos) });
         if (ev.type === 'deflect') {
@@ -913,6 +957,7 @@ export class FlightRace {
     this.onEvent({ type: 'explosion', size: 1, ship: true, distance: this._distN(e.sim.pos) });
     if (e === this.focus) this.shake = Math.max(this.shake, 0.9);
     e.trails.forEach((t) => t.trail.reset());
+    e.wake?.forEach((w) => w.reset());
     this.replays?.explosion(e);
   }
 
@@ -1091,7 +1136,7 @@ export class FlightRace {
   _render(dt) {
     for (const e of this.entities) {
       this._placeMesh(e, dt);
-      if (this.replays?.place(e)) { for (const t of e.trails) t.trail.mesh.visible = false; continue; }
+      if (this.replays?.place(e)) { for (const t of e.trails) t.trail.mesh.visible = false; if (e.wake) for (const w of e.wake) w.mesh.visible = false; continue; }
       const sim = e.sim;
       const speedN = clamp(Math.abs(sim.forwardSpeed) / sim.p.topSpeed, 0, 1.5);
       const thrust = this.state === 'intro' || this.state === 'countdown' ? 0.3 + (e.input.throttle || 0) * 0.4 : Math.max(e.input.throttle || 0, speedN * 0.7);
@@ -1108,6 +1153,16 @@ export class FlightRace {
         t.trail.mat.uniforms.uIntensity.value = (0.25 + speedN * 0.3 + (sim.boosting ? 0.4 : 0)) * (own ? 0.5 : 1);
         t.trail.mat.uniforms.uNear.value = own ? 14 : 6;
         t.trail.push(_w, _x, 0.3 + speedN * 0.3 + (sim.boosting ? 0.4 : 0));
+      }
+      if (e.wake) this._renderWake(e, dt, speedN, showTrail);
+      if (sim.drifting && showTrail && dt > 0 && (e === this.focus || this._near(sim.pos, 260))) {
+        // Drift: the tail throws sparks toward the outside of the turn.
+        e.driftFx = (e.driftFx || 0) + dt;
+        if (e.driftFx > 0.035) {
+          e.driftFx = 0;
+          _w.set(0, -0.2, 3).applyQuaternion(sim.quat).add(sim.pos);
+          this.sparks.emit(_w, _up.copy(sim.vel).multiplyScalar(0.7), 2 + Math.round(sim.drift * 3), sim.drift >= 0.62 ? e.craft.glowColor : DRIFT_SPARK, { spread: 22, size: 0.45, life: 0.3 });
+        }
       }
     }
     this.ghostRun?.render(dt, this.time, this.camera.position, !!this.replays?.playing);
@@ -1161,6 +1216,36 @@ export class FlightRace {
     this.hzViews?.update(dt, this.camera);
     if (this.dust) this.dust.update(dt, this.camera.position, this.focus?.sim.vel || _v.set(0, 0, 0));
     this.sky.update(this.camera, dt);
+  }
+
+  /**
+   * The slipstream behind a ship: faint for everyone, and lit up for the rival you are
+   * tucked in behind, so you can see the hole you're flying in.
+   */
+  _renderWake(e, dt, speedN, show) {
+    const sim = e.sim;
+    // Your own wake is behind your own camera: skip it unless a cinematic camera can see it.
+    const on = show && speedN > 0.45 && !(e === this.focus && !this._cinematicNow());
+    const mine = this.focus && this.focus.towOn === e ? this.focus.sim.draft : 0;
+    e.wakeK = damp(e.wakeK, on ? 0.06 + 0.34 * mine : 0, on ? 5 : 9, dt);
+    const vis = e.wakeK > 0.004;
+    for (const w of e.wake) w.mesh.visible = vis;
+    if (!on) { if (!vis) for (const w of e.wake) w.reset(); return; }
+    _w.set(0, 0, 3.2).applyQuaternion(e.craft.root.quaternion).add(e.craft.root.position);
+    _up.set(0, 1, 0).applyQuaternion(e.craft.root.quaternion);
+    // History advances on a fixed clock so the wake is the same length at any frame rate;
+    // between ticks only the head follows the ship.
+    e.wakeT += dt;
+    const shift = e.wakeT >= WAKE_TICK;
+    if (shift) e.wakeT = Math.min(e.wakeT - WAKE_TICK, WAKE_TICK);
+    // Crossed on the diagonals (an X from behind), so a chase camera above the line sees both.
+    _x.set(1, 0, 0).applyQuaternion(e.craft.root.quaternion);
+    e.wake[0].mat.uniforms.uIntensity.value = e.wakeK;
+    if (e.wake[1]) {
+      e.wake[1].mat.uniforms.uIntensity.value = e.wakeK;
+      e.wake[0].push(_w, _v.copy(_x).add(_up).multiplyScalar(0.7071), 1, shift);
+      e.wake[1].push(_w, _v.copy(_x).sub(_up).multiplyScalar(0.7071), 1, shift);
+    } else e.wake[0].push(_w, _x, 1, shift);
   }
 
   _snapCamera() { this._updateCamera(0, true); }
@@ -1296,6 +1381,7 @@ export class FlightRace {
       lapTime: sim.started ? this.raceTime - sim.lapStart : 0, bestLap: p.bestLap, lastLap: sim.lapTimes[sim.lapTimes.length - 1] ?? null,
       lapFrac: sim.finished ? 1 : clamp(sim.dist / L - sim.lap, 0, 1),
       streak: sim.streak, wrongWay: sim.wrongWay > 0.8 && !sim.dead, wall: sim.wall, scraping: sim.scraping > 0,
+      drifting: sim.drifting, drift: sim.drift, kick: sim.kickT > 0 ? sim.kick : 0, draft: sim.draft, towing: !!p.towOn,
       ghostDelta: this.ghostRun?.delta(sim) ?? null,
     });
   }
@@ -1385,7 +1471,7 @@ export class FlightRace {
 
   dispose() {
     if (this.net && this._netHandlers) for (const [k, fn] of Object.entries(this._netHandlers)) this.net.removeEventListener(k, fn);
-    for (const e of this.entities) { this.scene.remove(e.craft.root); e.craft.dispose(); e.trails.forEach((t) => t.trail.dispose()); }
+    for (const e of this.entities) { this.scene.remove(e.craft.root); e.craft.dispose(); e.trails.forEach((t) => t.trail.dispose()); e.wake?.forEach((w) => w.dispose()); }
     for (const pv of this.pickupViews.values()) { this.scene.remove(pv.group); pv.dispose(); }
     for (const v of this.itemViews.values()) this.scene.remove(v.obj);
     for (const d of this._dividers || []) d.dispose();

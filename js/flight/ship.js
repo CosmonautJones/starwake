@@ -5,6 +5,14 @@
 // set by the craft's grip, converting most sideways speed back into forward speed,
 // so light craft carve and heavy craft slide.
 //
+// Racing weight (course only):
+//   Drift     - brake while steering hard at speed and the ship digs in: it turns much
+//               tighter, the tail slides (grip drops), and a charge builds. Let go and the
+//               charge fires as a kick of speed. Tight corners are taken sideways.
+//   Slipstream - the race tells us when a rival is punching a hole just ahead (sim.tow);
+//               sitting in it builds draft, which raises top speed and lingers for a moment
+//               after pulling out: the slingshot.
+//
 // Two settings, picked by what the ship flies in:
 //   Course (race)  - the wormhole wall keeps you in (scraping costs a little speed),
 //                    progress is distance along the line, gates are optional boosts,
@@ -20,6 +28,21 @@ const FWD = new THREE.Vector3(0, 0, -1);
 const UP = new THREE.Vector3(0, 1, 0);
 const _loc = { i: 0, u: 0, c: new THREE.Vector3(), t: new THREE.Vector3() };
 const _t = new THREE.Vector3(), _inv = new THREE.Quaternion();
+
+// Racing weight: a course ship carries its momentum a little longer than the raw craft grip.
+const WEIGHT = 0.8;
+export const DRIFT = {
+  steer: 0.3,      // stick deflection needed to dig in
+  minSpeed: 0.4,   // of top speed
+  minCharge: 0.3,  // below this a release gives nothing
+  turn: 1.45,      // turn-rate multiplier while drifting
+  grip: 0.3,       // flight-assist multiplier while drifting (the slide)
+  brake: 0.3,      // how much of the brake still bites
+  floor: 0.5,      // drift braking never drops below this share of top speed
+  kickSpeed: 0.2,  // extra top speed at a full kick
+  kickAccel: 2.6,  // extra acceleration (x craft accel) at a full kick
+};
+export const DRAFT = { build: 1.1, decay: 0.75, speed: 0.1, accel: 0.6 };
 
 /** Shared stick curve: fine control near the centre, full rate at the edge. */
 export function stickCurve(v) {
@@ -72,6 +95,12 @@ export class ShipSim {
     this.dodgeT = 0;      // > 0 while dodging (lasers deflect)
     this.dodgeDir = 0;
     this.dodgeCd = 0;
+    this.drifting = false; // brake + hard steer at speed
+    this.drift = 0;        // drift charge 0..1
+    this.kick = 0;         // strength of the kick being spent (0..1)
+    this.kickT = 0;        // seconds of kick left
+    this.tow = false;      // set by the race each step: a rival's wake is just ahead
+    this.draft = 0;        // slipstream built up 0..1
     this.dead = false;
     this.respawnT = 0;
     this.lap = 0;
@@ -150,10 +179,33 @@ export class ShipSim {
     if (wantBoost) this.boost = Math.max(0, this.boost - p.boostDrain * dt);
     else this.boost = Math.min(1, this.boost + 0.03 * p.boostRegen * dt);
 
-    // --- Rotation.
     const fwdSpeed = this.forwardSpeed;
+
+    // --- Drift: brake + hard steer at speed. Charge while held, kick on release.
+    const steer = Math.min(1, Math.hypot(input.aimX, input.aimY));
+    const wantDrift = racing && !this.battle && this.stun <= 0 && brake > 0.3 && steer > DRIFT.steer && fwdSpeed > p.topSpeed * DRIFT.minSpeed;
+    if (wantDrift) {
+      if (!this.drifting) { this.drifting = true; this.events.push({ type: 'driftStart' }); }
+      this.drift = Math.min(1, this.drift + dt * (0.42 + 0.3 * steer));
+    } else if (this.drifting) {
+      this.drifting = false;
+      if (this.drift >= DRIFT.minCharge && this.stun <= 0) {
+        this.kick = this.drift;
+        this.kickT = 0.55 + 0.85 * this.drift;
+        this.boost = Math.min(1, this.boost + 0.1 * this.drift);
+        this.events.push({ type: 'driftBoost', tier: this.drift >= 0.999 ? 3 : this.drift >= 0.62 ? 2 : 1 });
+      }
+      this.drift = 0;
+    }
+    if (this.kickT > 0) { this.kickT -= dt; if (this.kickT <= 0) this.kick = 0; }
+
+    // --- Slipstream: builds in a rival's wake, lingers after pulling out.
+    if (this.tow && racing) this.draft = Math.min(1, this.draft + dt / DRAFT.build);
+    else this.draft = Math.max(0, this.draft - dt * DRAFT.decay);
+
+    // --- Rotation.
     const speedN = clamp(fwdSpeed / p.topSpeed, 0, 1.5);
-    const turnScale = (1 - 0.15 * clamp(speedN - 0.5, 0, 1)) * (this.boosting ? 0.85 : 1) * ctl;
+    const turnScale = (1 - 0.15 * clamp(speedN - 0.5, 0, 1)) * (this.boosting ? 0.85 : 1) * ctl * (this.drifting ? DRIFT.turn : 1);
     const allowTurn = env.racing || this.finished ? 1 : 0;
     const tx = stickCurve(input.aimY) * p.turnRate * turnScale * allowTurn;
     const ty = -stickCurve(input.aimX) * p.turnRate * turnScale * allowTurn;
@@ -207,11 +259,11 @@ export class ShipSim {
     let fs = this.vel.dot(fwd);
     _lat.copy(this.vel).addScaledVector(fwd, -fs);
     const burst = this.boosting ? p.boostMul : 1;
-    const maxV = p.topSpeed * burst * (this.stun > 0 ? 0.65 : 1);
+    const maxV = p.topSpeed * burst * (this.stun > 0 ? 0.65 : 1) * (1 + DRAFT.speed * this.draft + DRIFT.kickSpeed * this.kick);
     // Throttle sets a target speed; above it the engines ease off, with none it coasts.
     const want = maxV * (this.boosting ? 1 : throttle);
     if (want > 0 && fs < want) {
-      const a = p.accel * (this.boosting ? 1.9 : 1);
+      const a = p.accel * (this.boosting ? 1.9 : 1) * (1 + DRAFT.accel * this.draft) + (this.kickT > 0 ? p.accel * DRIFT.kickAccel * this.kick : 0);
       fs = Math.min(want, fs + a * dt * (1 - 0.6 * clamp(fs / maxV, 0, 1)));
     } else if (want > 0) {
       fs -= (fs - want) * 0.9 * dt;
@@ -219,10 +271,16 @@ export class ShipSim {
       fs -= fs * 0.22 * dt;
     }
     if (fs > maxV) fs += (maxV - fs) * Math.min(1, 1.8 * dt);
-    if (brake > 0) fs = fs > 0 ? Math.max(-30, fs - p.brake * brake * dt) : Math.max(-35, fs - 40 * brake * dt);
+    if (this.drifting) {
+      // Digging in sheds a little speed, never more than down to the drift floor.
+      const floor = p.topSpeed * DRIFT.floor;
+      if (fs > floor) fs = Math.max(floor, fs - p.brake * DRIFT.brake * brake * dt);
+    } else if (brake > 0) fs = fs > 0 ? Math.max(-30, fs - p.brake * brake * dt) : Math.max(-35, fs - 40 * brake * dt);
     // Flight assist: bleed sideways speed, returning most of it to forward speed.
     const latLen = _lat.length();
-    const keep = Math.exp(-p.assist * ctl * dt);
+    // Drifting lets the tail go (the slide); the kick bites hard so the speed lands on the nose.
+    const grip = p.assist * (this.battle ? 1 : WEIGHT) * (this.drifting ? DRIFT.grip : this.kickT > 0 ? 1.8 : 1);
+    const keep = Math.exp(-grip * ctl * dt);
     const removed = latLen * (1 - keep);
     _lat.multiplyScalar(keep);
     // Return most of it to forward speed, but never more than the speed we had
@@ -423,6 +481,7 @@ export class ShipSim {
     if (this.dead) return;
     this.dead = true;
     this.supersonic = false;
+    this.drifting = false; this.drift = 0; this.kick = 0; this.kickT = 0; this.draft = 0; this.tow = false;
     this.deaths++;
     this.respawnT = this.battle ? 3 : 2.2;
     this.boosting = false;
@@ -461,6 +520,7 @@ export class ShipSim {
     this.stunGuard = 0;
     this.supersonic = false;
     this.dodgeT = 0;
+    this.drifting = false; this.drift = 0; this.kick = 0; this.kickT = 0; this.draft = 0; this.tow = false;
     this.streak = 0;
     this.wrongWay = 0;
     this.outside = 0;
@@ -479,7 +539,7 @@ export class ShipSim {
       p: [r(this.pos.x), r(this.pos.y), r(this.pos.z)],
       q: [+this.quat.x.toFixed(4), +this.quat.y.toFixed(4), +this.quat.z.toFixed(4), +this.quat.w.toFixed(4)],
       v: [r(this.vel.x), r(this.vel.y), r(this.vel.z)],
-      b: this.boosting ? (this.supersonic ? 2 : 1) : 0, dg: this.dodgeT > 0 ? this.dodgeDir : 0, c: this.gateIdx, pr: +this.progress().toFixed(4), l: this.lap,
+      b: this.boosting ? (this.supersonic ? 2 : 1) : 0, dr: this.drifting ? 1 : this.kickT > 0 ? 2 : 0, dg: this.dodgeT > 0 ? this.dodgeDir : 0, c: this.gateIdx, pr: +this.progress().toFixed(4), l: this.lap,
       h: Math.round(this.hull), s: Math.round(this.shield), f: this.finished ? 1 : 0, d: this.dead ? 1 : 0, g: this.ghost > 0 ? 1 : 0,
     };
   }

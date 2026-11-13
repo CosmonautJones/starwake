@@ -1,13 +1,13 @@
 {
   "name": "starwake",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "description": "Starwake — arcade WebGL space racing with a craft hangar and multiplayer lobbies",
   "main": "index.js",
   "scripts": {
     "start": "node server/server.mjs",
     "check": "node tools/check-courses.mjs",
     "sim": "node tools/flight-sim.mjs",
-    "test": "node tools/stamp-version.mjs --check && node tools/check-courses.mjs && node tools/flight-sim.mjs normal 1 && node tools/assist-sim.mjs && node tools/battle-sim.mjs normal 120 && node tools/replay-sim.mjs && node tools/test-net.mjs && node tools/career-sim.mjs",
+    "test": "node tools/stamp-version.mjs --check && node tools/check-courses.mjs && node tools/flight-sim.mjs normal 1 && node tools/assist-sim.mjs && node tools/drift-sim.mjs && node tools/battle-sim.mjs normal 120 && node tools/replay-sim.mjs && node tools/test-net.mjs && node tools/career-sim.mjs",
     "stamp": "node tools/stamp-version.mjs"
   },
   "keywords": [],

@@ -3,7 +3,8 @@
 import * as THREE from 'three';
 
 // Boost trail styles (design.trail, cosmetic only). 'glow' is the original ribbon.
-const TRAIL_STYLE = { glow: 0, comet: 1, pulse: 2, ember: 3, prism: 4, aurora: 5, starwake: 6 };
+// 'wake' is not a cosmetic: it is the slipstream a racing ship leaves, wide and faint.
+const TRAIL_STYLE = { glow: 0, comet: 1, pulse: 2, ember: 3, prism: 4, aurora: 5, starwake: 6, wake: 7 };
 
 export class Trail {
   /** style: a design.trail id; color2: a second colour (the craft's trim) for two-tone styles. */
@@ -72,9 +73,14 @@ export class Trail {
             c = mix(vec3(0.55, 0.75, 1.3), vec3(1.35, 1.0, 0.45), core) + vec3(spark) * 1.4;
             a = pow(tl, 1.7) * uIntensity * 0.8 * near * (0.85 + spark);
           }
+          if (uStyle > 6.5) { // wake: the hole a ship punches in space; flowing lines, brightest just behind the tail
+            float lines = 0.5 + 0.5 * sin(vS * 8.0 + sin(vT * 15.0 - uTime * 6.0) * 1.3);
+            c = mix(uColor, vec3(0.82, 0.94, 1.0), 0.55);
+            a = pow(tl, 1.3) * smoothstep(0.0, 0.1, vT) * uIntensity * (0.3 + 0.7 * lines) * near;
+          }
           // Soft edges (a ribbon, not a bar) and a roll-off close to the lens, where one trail
           // can cover a big slice of the screen and bloom straight to white.
-          a *= (1.0 - smoothstep(0.25, 1.0, edge)) * mix(0.4, 1.0, smoothstep(10.0, 48.0, vDepth));
+          a *= (1.0 - smoothstep(0.25, 1.0, edge)) * (uStyle > 6.5 ? 1.0 : mix(0.4, 1.0, smoothstep(10.0, 48.0, vDepth))); // (a wake is meant to be flown inside)
           gl_FragColor = vec4(c, a);
         }`,
     });
@@ -88,10 +94,11 @@ export class Trail {
   /** Move the whole ribbon (the hangar preview streams it behind a parked craft). */
   drift(offset) { for (let i = 0; i < this.filled; i++) this.pts[i].add(offset); }
 
-  push(point, right, width) {
+  /** shift=false moves only the head (the newest point), leaving the history where it is. */
+  push(point, right, width, shift = true) {
     if (!Number.isFinite(point.x + point.y + point.z + right.x + width)) return;
     // shift history
-    for (let i = this.n - 1; i > 0; i--) {
+    if (shift || !this.filled) for (let i = this.n - 1; i > 0; i--) {
       this.pts[i].copy(this.pts[i - 1]);
       this.rights[i].copy(this.rights[i - 1]);
       this.widths[i] = this.widths[i - 1];
