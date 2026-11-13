@@ -31,6 +31,7 @@ import { computeStats } from '../craft/parts.js';
 import { clamp, damp, hashString, mulberry32 } from '../core/util.js';
 import { ReplayDirector } from './replay.js';
 import { GhostRun } from '../space/ghostView.js';
+import { Cockpit } from '../space/cockpit.js';
 
 const FIXED_DT = 1 / 120;
 const COUNTDOWN = 3;
@@ -1187,6 +1188,7 @@ export class FlightRace {
     this.shatter.update(dt);
     this.speedFx?.setLevel(this.settings.speedEffects, !!this.settings.reduceMotion);
     this._updateCamera(dt);
+    this._updateCockpit(dt);
     this.scrapeFx?.update(dt, this);
     if (this.padViews) this.padViews.update(dt, this.time, this.focus?.id);
     if (this.padFlash) { this.padFlash.t += dt; if (this.padFlash.t > 0.8) this.padFlash = null; }
@@ -1249,6 +1251,20 @@ export class FlightRace {
   }
 
   _snapCamera() { this._updateCamera(0, true); }
+
+  /** First-person view: the cockpit sits on the camera whenever the player's own ship is hidden for it. */
+  _updateCockpit(dt) {
+    const p = this.player;
+    const on = !!p && this.cameraMode === 'hood' && this.focus === p && this.state !== 'intro' && !this._cinematicNow() && !p.sim.dead && p.connected;
+    if (!on) { this.cockpit?.setVisible(false); return; }
+    if (!this.cockpit) this.cockpit = new Cockpit(this.scene, p.craft.design.colors); // built the first time it's needed
+    const sim = p.sim, s = this._cockpitState || (this._cockpitState = {});
+    s.speedN = Math.max(0, sim.forwardSpeed) / sim.p.topSpeed; s.boost = sim.boost; s.boosting = sim.boosting; s.angVel = sim.angVel;
+    s.drift = sim.drift; s.drifting = sim.drifting; s.kick = sim.kickT > 0 ? sim.kick : 0; s.supersonic = sim.supersonic;
+    s.time = this.time; s.reduce = this.settings.reduceMotion;
+    this.cockpit.setVisible(true);
+    this.cockpit.update(dt, this.camera, s);
+  }
 
   _cinematicNow() { return this.mode === 'attract' || this.state === 'intro' || (this.state === 'finished' && this.finishWait > 1); }
 
@@ -1470,6 +1486,7 @@ export class FlightRace {
   }
 
   dispose() {
+    this.cockpit?.dispose();
     if (this.net && this._netHandlers) for (const [k, fn] of Object.entries(this._netHandlers)) this.net.removeEventListener(k, fn);
     for (const e of this.entities) { this.scene.remove(e.craft.root); e.craft.dispose(); e.trails.forEach((t) => t.trail.dispose()); e.wake?.forEach((w) => w.dispose()); }
     for (const pv of this.pickupViews.values()) { this.scene.remove(pv.group); pv.dispose(); }
