@@ -94,7 +94,7 @@ export class HangarStage {
     c.lookAt(this.focusX, -2.2, 0); // aim low so the craft sits above the stats panel
     if (this.craft) {
       this.craft.root.position.y = Math.sin(this.time * 1.6) * 0.15;
-      this.craft.setThrust(0.35 + Math.sin(this.time * 2) * 0.05, 0, this.time);
+      this.craft.setThrust(0.22 + Math.sin(this.time * 2) * 0.04, 0, this.time, 0.5); // idling: the bloom mustn't swallow the tail
       this.craft.root.updateMatrixWorld();
       _td.set(0, 0, Math.min(0.6, dt * 26));
       for (const t of this.trails) {
