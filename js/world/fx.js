@@ -43,13 +43,14 @@ export class Trail {
         vec3 hue(float h){ return clamp(abs(fract(h + vec3(0.0, 0.667, 0.333)) * 6.0 - 3.0) - 1.0, 0.0, 1.0); }
         void main(){
           float near = smoothstep(uNear, uNear * 4.0, vDepth);
-          float a = pow(1.0 - vT, 2.2) * uIntensity * 0.7 * near;
+          float tl = clamp(1.0 - vT, 0.0, 1.0);
+          float a = pow(tl, 2.2) * uIntensity * 0.7 * near;
           vec3 c = mix(vec3(1.0), uColor, smoothstep(0.0, 0.05, vT)) * 1.1;
           float edge = abs(vS);
           if (uStyle > 0.5 && uStyle < 1.5) { // comet: long white-hot core, glow at the edges
             float core = 1.0 - smoothstep(0.0, 0.55, edge);
             c = mix(uColor * 1.1, vec3(1.25), core * (1.0 - smoothstep(0.1, 0.7, vT)));
-            a = pow(1.0 - vT, 1.6) * uIntensity * 0.75 * near;
+            a = pow(tl, 1.6) * uIntensity * 0.75 * near;
           } else if (uStyle > 1.5 && uStyle < 2.5) { // pulse: bright bands running back
             float band = smoothstep(0.55, 1.0, sin(vT * 38.0 - uTime * 16.0) * 0.5 + 0.5);
             c = mix(uColor * 0.8, mix(vec3(1.2), uColor2 * 1.4, 0.35), band);
@@ -69,7 +70,7 @@ export class Trail {
             float core = 1.0 - smoothstep(0.0, 0.6, edge);
             float spark = step(0.93, fract(sin(floor(vT * 90.0 - uTime * 30.0) * 12.9898 + floor(vS * 3.0) * 78.233) * 43758.5453));
             c = mix(vec3(0.55, 0.75, 1.3), vec3(1.35, 1.0, 0.45), core) + vec3(spark) * 1.4;
-            a = pow(1.0 - vT, 1.7) * uIntensity * 0.8 * near * (0.85 + spark);
+            a = pow(tl, 1.7) * uIntensity * 0.8 * near * (0.85 + spark);
           }
           // Soft edges (a ribbon, not a bar) and a roll-off close to the lens, where one trail
           // can cover a big slice of the screen and bloom straight to white.

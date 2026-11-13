@@ -89,7 +89,8 @@ void main(){
     float edge = 0.58 + 0.42 * rays;
     a = pow(clamp(1.0 - r / edge, 0.0, 1.0), 2.4) * (0.35 + 0.65 * smoothstep(0.18, 0.42, r));
   } else if (vShape < 2.5) {          // ring
-    a = (exp(-pow((r - 0.88) / 0.035, 2.0)) + exp(-pow((r - 0.84) / 0.12, 2.0)) * 0.18) * step(r, 1.0);
+    float g1 = (r - 0.88) / 0.035, g2 = (r - 0.84) / 0.12; // squared by hand: pow() of a negative base is undefined
+    a = (exp(-g1 * g1) + exp(-g2 * g2) * 0.18) * step(r, 1.0);
   } else if (vShape < 3.5) {          // streak (uv.x: 0 tail .. 1 head)
     float y = vUv.y * 2.0 - 1.0;
     a = exp(-y * y * 6.0) * pow(vUv.x, 1.6) * smoothstep(1.0, 0.92, vUv.x) + exp(-y * y * 18.0) * smoothstep(0.75, 1.0, vUv.x) * 0.6;
@@ -221,7 +222,7 @@ void main(){
   vec3 w = vec3(sw_vnoise(p + vec3(t, 0.0, 0.0)), sw_vnoise(p + vec3(0.0, t * 0.8, 5.2)), sw_vnoise(p + vec3(2.1, 0.0, t * 0.6)));
   float sw = smoothstep(0.22, 0.72, sw_fbm(p * 1.25 + w * 1.9 + vec3(0.0, 0.0, t * 0.4), 3));
   // crackling veins: thin ridges that flicker
-  float rv = 1.0 - abs(sw_vnoise(p * 3.0 + w * 2.2 + vec3(t * 1.6)) * 2.0 - 1.0);
+  float rv = max(0.0, 1.0 - abs(sw_vnoise(p * 3.0 + w * 2.2 + vec3(t * 1.6)) * 2.0 - 1.0));
   float veins = pow(rv, 12.0) * (0.55 + 0.45 * sin(uTime * 23.0 + seed * 40.0 + p.x * 3.0));
   float pulse = 0.8 + 0.2 * sin(uTime * (2.0 + seed * 1.3) + seed * 9.0);
   float core = pow(ndv, 16.0 - 6.0 * warn) * pulse;

@@ -82,7 +82,7 @@ void main(){
   float dist = length(toCam);
   vec3 V = toCam / dist;
   vec3 N = normalize(vN);
-  float ndv = abs(dot(N, V));
+  float ndv = min(abs(dot(N, V)), 1.0);
   float fres = pow(1.0 - ndv, 2.2);
 
   // distance shaping: almost nothing right at the lens, full at mid range, soft far away
@@ -167,7 +167,8 @@ void main(){
     float R = 2.0 + age * 48.0;
     float wdt = 1.2 + age * 3.0;
     float life = 1.0 - age / ${SCRAPE_LIFE.toFixed(2)};
-    float ring = exp(-pow((d - R) / wdt, 2.0)) * life * life;
+    float rq = (d - R) / wdt;
+    float ring = exp(-rq * rq) * life * life;
     float flash = exp(-d * d / pow(2.5 + age * 9.0, 2.0)) * exp(-age * 7.0);
     float hexes = 0.0;
     if (d < R + 8.0) {

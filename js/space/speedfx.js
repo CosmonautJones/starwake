@@ -684,7 +684,7 @@ void main(){
     vec2 pd = (vUv - uPadC) * asp;
     float pr = length(pd);
     float px = (pr - (0.03 + uPadT * 1.25)) / (0.022 + 0.05 * uPadT);
-    float pf = pow(1.0 - uPadT, 1.6) * uPadAmt;
+    float pf = pow(clamp(1.0 - uPadT, 0.0, 1.0), 1.6) * uPadAmt;
     padRing = exp(-px * px) * pf;
     uv -= (pd / max(pr, 1e-4)) / asp * px * exp(-px * px) * pf * 0.012;
   }
@@ -715,7 +715,7 @@ void main(){
   col += uFlashColor * uFlash * smoothstep(0.45, 1.1, rr) * 0.3;
   if (uPadT >= 0.0) {
     float re = length((vUv - 0.5) * asp);
-    col += uPadColor * (padRing * 0.85 + pow(1.0 - uPadT, 5.0) * uPadAmt * 0.32 * smoothstep(0.12, 1.0, re));
+    col += uPadColor * (padRing * 0.85 + pow(clamp(1.0 - uPadT, 0.0, 1.0), 5.0) * uPadAmt * 0.32 * smoothstep(0.12, 1.0, re));
   }
   gl_FragColor = vec4(col, base.a);
 }`,

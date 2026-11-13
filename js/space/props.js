@@ -234,7 +234,7 @@ function crystalMat(hex) {
   // cloudy interior with a little view parallax so faces don't read as flat plastic
   vec3 vd = normalize(vViewPosition);
   float cl = sw_fbm(vCrystP * 0.9 + vd * 0.6, 4);
-  float vein = pow(1.0 - abs(sw_fbm(vCrystP * 1.7 - vd * 0.4 + 5.0, 3) * 2.0 - 1.0), 10.0);
+  float vein = pow(max(0.0, 1.0 - abs(sw_fbm(vCrystP * 1.7 - vd * 0.4 + 5.0, 3) * 2.0 - 1.0)), 10.0);
   totalEmissiveRadiance *= 0.55 + 0.9 * cl + 0.55 * vein;
 }
 {
