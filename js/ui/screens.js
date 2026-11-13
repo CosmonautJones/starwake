@@ -12,6 +12,7 @@ import { BODIES, randomDesign, normalizeDesign } from '../craft/parts.js';
 import { mulberry32 } from '../core/util.js';
 import { HangarScreen } from './hangar.js';
 import { rankPill, courseMedal, targetsPanel, resultsPanel } from './careerView.js';
+import { versionLabel, builtLabel } from '../version.js';
 
 const html = (s) => {
   const t = document.createElement('template');
@@ -191,6 +192,7 @@ export class Screens {
           <span>flown by ${escapeHtml(app.settings.playerName)}</span>
           ${storage.persistent ? '' : '<span class="warn">Saving is unavailable in this browser mode — designs last until you close the tab.</span>'}
           ${matchMedia('(hover: none) and (pointer: coarse)').matches ? '<span class="warn">Starwake is played with a keyboard or a game controller. Connect one to race.</span>' : ''}
+          <span class="version" title="Built ${builtLabel()}">${versionLabel()}</span>
         </footer>
       </section>`);
     el.addEventListener('click', (e) => {
@@ -348,6 +350,7 @@ export class Screens {
               </tbody>
             </table>
             <p class="note">Your ship turns toward the cursor — the further from the centre, the harder it turns. In races, centre the cursor and track assist flies you down the tunnel. Point roughly at a rival and the lock builds by itself; when the ring closes, fire a missile. Lasers overheat if you hold the trigger too long. Boost gates and pickups refill boost.</p>
+            <p class="note version-note">Starwake ${versionLabel()}, built ${builtLabel()}</p>
           </div>
         </div>
       </section>`);

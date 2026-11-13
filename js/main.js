@@ -9,6 +9,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { storage } from './core/storage.js';
+import { VERSION, BUILT, versionLabel } from './version.js';
 import { loadCareer, recordRun, RunTracker } from './core/career.js';
 import { AudioEngine } from './core/audio.js';
 import { Input } from './core/input.js';
@@ -525,6 +526,10 @@ class App {
 function nextFrame() { return new Promise((r) => requestAnimationFrame(() => r())); }
 
 function boot() {
+  console.info(`Starwake ${versionLabel()} (built ${BUILT})`);
+  document.documentElement.dataset.version = VERSION;
+  const bootMark = document.querySelector('#boot .boot-mark');
+  if (bootMark) bootMark.insertAdjacentHTML('afterend', `<p class="boot-ver">${versionLabel()}</p>`);
   try {
     new App();
   } catch (err) {

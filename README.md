@@ -194,6 +194,10 @@ URL parameters for testing:
 
 Settings → **Show frame rate** displays the frame rate. If a machine struggles, set **Quality** to Low (it turns off bloom, lowers resolution and reduces particles). **Speed effects** (Full, Reduced, Off) turns down speed streaks, radial blur, camera shake and FOV kick; Reduce motion caps it at Reduced. **Controller rumble** turns gamepad vibration on or off.
 
+## Versions
+
+The running version shows on the loading screen, the title screen (bottom right) and the bottom of Settings, and is logged to the console. To release, bump `version` in `package.json` (major.minor.patch) and run `npm run stamp`, which writes it and today's date to `js/version.js`. `npm test` fails if the two disagree.
+
 ## Credits
 
 Three.js © three.js authors, MIT licence (`vendor/three/LICENSE`). Fonts: Unbounded and Saira via Google Fonts. If those can't load, the game falls back to system fonts.
