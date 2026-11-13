@@ -75,7 +75,8 @@ void main(){
     a = max(exp(-r2 * 6.0) - 0.0025, 0.0) + exp(-r2 * 30.0) * 0.6;
   } else if (vShape < 2.5) {
     float r = sqrt(r2);
-    a = (exp(-pow((r - 0.9) / 0.022, 2.0)) * 0.8 + exp(-pow((r - 0.84) / 0.09, 2.0)) * 0.12) * step(r, 1.0);
+    float g1 = (r - 0.9) / 0.022, g2 = (r - 0.84) / 0.09; // squared by hand: pow() of a negative base is undefined
+    a = (exp(-g1 * g1) * 0.8 + exp(-g2 * g2) * 0.12) * step(r, 1.0);
   } else {
     a = exp(-c.y * c.y * 7.0) * smoothstep(0.0, 0.7, vUv.x) * (0.4 + 0.6 * vUv.x);
   }

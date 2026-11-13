@@ -63,7 +63,7 @@ void main(){
   float m2 = smoothstep(0.42, 0.70, sw_fbm(d * 1.25 + uSeed * 1.31 + 40.0, 4));
   float c1 = pow(smoothstep(0.30, 0.80, n1), 2.4) * m1;
   float c2 = pow(smoothstep(0.30, 0.80, n2), 2.4) * m2;
-  float fil = 1.0 - abs(sw_fbm(q * 3.6 + w * 3.5, 6) * 2.0 - 1.0);
+  float fil = max(0.0, 1.0 - abs(sw_fbm(q * 3.6 + w * 3.5, 6) * 2.0 - 1.0));
   fil = pow(fil, 7.0);
   float darkDust = smoothstep(0.52, 0.72, sw_fbm(q * 3.2 + 7.0 + w, 6));
   vec3 neb = uNeb1 * (c1 * 0.10 + fil * c1 * 0.12) + uNeb2 * (c2 * 0.085 + fil * c2 * 0.10);
@@ -91,7 +91,14 @@ void main(){
 // ---------------------------------------------------------------- stars
 const STAR_VS = /* glsl */`
 attribute float aSize; attribute vec3 aColor; uniform float uPx; varying vec3 vC;
-void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv; gl_PointSize = aSize * uPx; vC = aColor; }`;
+void main(){
+  vec4 mv = modelViewMatrix * vec4(position, 1.0); gl_Position = projectionMatrix * mv;
+  // A star narrower than a few pixels lands between pixel centres differently every frame the
+  // camera turns, so it twinkles, and bloom turns thousands of twinkles into a whole-frame
+  // shimmer. Draw small stars wider and proportionally dimmer: same light, steady.
+  float s = aSize * uPx, wide = max(s, 3.4);
+  gl_PointSize = wide; vC = aColor * pow(s / wide, 1.6);
+}`;
 const STAR_FS = /* glsl */`
 varying vec3 vC;
 void main(){ vec2 c = gl_PointCoord * 2.0 - 1.0; float r2 = dot(c, c); float a = exp(-r2 * 5.0) - 0.0067; if (a <= 0.0) discard; gl_FragColor = vec4(vC * a, 1.0); }`;
@@ -181,7 +188,7 @@ void main(){
   } else {
     // ice world: pale with dark crack lines
     float h = sw_fbm(o * 2.6 + sd, 6);
-    float cr = 1.0 - abs(sw_fbm(o * 5.0 + sd + 3.0, 5) * 2.0 - 1.0);
+    float cr = max(0.0, 1.0 - abs(sw_fbm(o * 5.0 + sd + 3.0, 5) * 2.0 - 1.0));
     cr = pow(cr, 14.0);
     alb = mix(uC1, uC2, smoothstep(0.35, 0.65, h));
     alb = mix(alb, uC2 * 0.55, cr * 0.75);
@@ -204,7 +211,7 @@ void main(){
   vec3 hv = normalize(uSun + v);
   col += uSunCol * uSunI * spec * pow(max(dot(n, hv), 0.0), 80.0) * 0.35 * step(0.0, ndl);
   // atmospheric scattering near the limb, lit side only
-  float nv = max(dot(n, v), 0.0);
+  float nv = clamp(dot(n, v), 0.0, 1.0);
   float fres = pow(1.0 - nv, 3.0);
   float litA = smoothstep(-0.2, 0.55, ndl);
   col = mix(col, uAtmo * uSunI * 0.45, fres * litA * 0.75);

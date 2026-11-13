@@ -319,7 +319,11 @@ export function makeLightsMaterial(tint) {
         } else if (type < 1.5) {
           // white strobe: double flash every 1.3 s
           float f = fract(t / 1.3);
-          k = uNav * (0.08 + 2.6 * (exp(-pow(f / 0.03, 2.0)) + exp(-pow((f - 0.14) / 0.03, 2.0))));
+          // (Wide and dim enough to survive bloom: a 40 ms, 2.7x flash is shorter than three frames,
+          // so it was caught on some frames and missed on others, and with six ships on the grid
+          // bloom turned that into the whole screen flickering whenever a camera sat close.)
+          float f1 = f / 0.055, f2 = (f - 0.2) / 0.055; // squared by hand: pow() of a negative base is undefined
+          k = uNav * (0.08 + 1.15 * (exp(-f1 * f1) + exp(-f2 * f2)));
         } else {
           // long-range beacon: fades in with distance, constant screen size
           col = uTint;

@@ -281,7 +281,7 @@ float sw_m = sw_fbm(vRockP * 3.1 + 4.0, 3);
 float sw_s = sw_vnoise(vRockP * 23.0);
 diffuseColor.rgb *= 1.0 + uMottle * ((sw_m - 0.5) * 1.6 + (sw_s - 0.5) * 0.5 * clamp(1.5 - sw_fw * 30.0, 0.0, 1.0));
 ${kind === 'iron' ? 'diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.15, 0.78, 0.55), smoothstep(0.5, 0.75, sw_m) * 0.6);' : ''}
-${kind === 'ice' ? 'float sw_crack = pow(1.0 - abs(sw_fbm(vRockP * 2.3 + 7.0, 4) * 2.0 - 1.0), 24.0);\ndiffuseColor.rgb *= 1.0 - sw_crack * 0.25;' : ''}`);
+${kind === 'ice' ? 'float sw_crack = pow(max(0.0, 1.0 - abs(sw_fbm(vRockP * 2.3 + 7.0, 4) * 2.0 - 1.0)), 24.0);\ndiffuseColor.rgb *= 1.0 - sw_crack * 0.25;' : ''}`);
     fs = fs.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 roughnessFactor = clamp(roughnessFactor * (0.85 + 0.35 * sw_m), 0.04, 1.0);`);
     fs = fs.replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>

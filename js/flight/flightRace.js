@@ -1226,6 +1226,7 @@ export class FlightRace {
       c.quat.copy(sim.quat);
       cam.fov = this.settings.fov || 70;
       cam.updateProjectionMatrix();
+      cam.updateMatrixWorld(); // the sky, tunnel and dust read it this frame; without this they ran a frame behind the flyby
       return;
     }
     c.shotT -= dt;
