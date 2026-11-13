@@ -457,6 +457,10 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .hud-sub { margin-top: 6px; font-size: clamp(12px, 1.8vh, 14px); font-weight: 600; color: #c4ceef; padding: 1px 12px; border-radius: 999px; background: rgba(6, 8, 26, 0.55); }
 .hud-sub:empty { display: none; }
 .hud.has-streak .hud-sub[data-k="ringCount"] { color: #241603; background: linear-gradient(100deg, var(--gold), var(--nitro)); }
+.hud-feel { letter-spacing: 0.04em; }
+.hud.is-drifting .hud-feel { color: #2a1602; background: linear-gradient(100deg, #ffd9a0, var(--gold)); }
+.hud.is-kick .hud-feel { color: #2a0d02; background: linear-gradient(100deg, var(--gold), var(--nitro)); }
+.hud.is-drafting .hud-feel { color: #04202a; background: linear-gradient(100deg, #bdefff, var(--ion)); }
 .hud-score { display: flex; align-items: center; margin-top: calc(var(--bw) * 0.036 + 8px); }
 .hud-clock {
   position: relative; z-index: 1; font-size: clamp(20px, 3.4vh, 30px); font-weight: 700; font-stretch: 108%; font-variant-numeric: tabular-nums;

@@ -339,7 +339,7 @@ export class Screens {
               <tbody>
                 <tr><td>Steer</td><td>Mouse (or arrow keys)</td><td>Left stick</td></tr>
                 <tr><td>Thrust</td><td>W</td><td>RT</td></tr>
-                <tr><td>Brake / reverse</td><td>S</td><td>LT</td></tr>
+                <tr><td>Brake / reverse · hold in a turn to drift</td><td>S</td><td>LT</td></tr>
                 <tr><td>Roll</td><td>A D (or Q E)</td><td>Right stick</td></tr>
                 <tr><td>Fire lasers</td><td>Left click (or F)</td><td>RB</td></tr>
                 <tr><td>Fire missile</td><td>Right click (or G)</td><td>LB</td></tr>

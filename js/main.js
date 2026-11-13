@@ -285,7 +285,7 @@ class App {
       ? 'Left stick aim · RT thrust · RB fire · LB missile · A boost · Y reset'
       : battle
         ? `Mouse aims · W thrust · Left click fire · Right click missile · Space boost · ${this.race.teams ? `You're on Blue — first team to ${this.race.target} kills` : `First to ${this.race.target} kills`}`
-        : 'Mouse steers · W thrust · Space boost · Let go of the mouse and the ship follows the tunnel');
+        : 'Mouse steers · W thrust · Space boost · Hold S in a turn to drift, let go for a kick · Tuck in behind a rival for a slipstream');
     this.setStage(this.race);
     this.screens.show('race');
     this.input.setRaceMode(true);
@@ -355,6 +355,7 @@ class App {
       case 'shieldDown': a.play('shieldDown'); break;
       case 'overheat': a.play('overheat'); break;
       case 'boostStart': a.play('boostStart'); break;
+      case 'driftBoost': a.play('boostStart'); this.input.rumble(0.2 + 0.15 * e.tier, 90 + 40 * e.tier); break;
       case 'explosion': a.play('explosion', { size: e.size, distance: e.distance, ship: !!e.ship }); break;
       case 'debris': a.play('debris', { size: e.size, kind: e.kind, distance: e.distance }); break;
       case 'dodge': a.play('dodge', { pan: e.dir * 0.4 }); this.input.rumble(0.25, 80); break;

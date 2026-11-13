@@ -143,6 +143,7 @@ export class Hud {
             <b class="hud-time" data-k="raceTime">0:00.000</b>
           </div>
           <div class="race-only hud-sub" data-k="ringCount"></div>
+          <div class="race-only hud-sub hud-feel" data-k="feelTag"></div>
           <div class="race-only hud-ghost" data-k="ghost" hidden><span>Ghost</span><b data-k="ghostVal"></b></div>
           <div class="battle-only hud-score" data-k="scoreboard">
             <b class="sc t0" data-k="t0" hidden>0</b>
@@ -408,6 +409,12 @@ export class Hud {
     this._arc('browB', 0);
     this._set('ringCount', s.streak >= 2 ? `Gate streak ×${s.streak}` : '');
     this._flag('has-streak', s.streak >= 2);
+    // One line for how the ship is being flown: drift charge, the kick, or a slipstream.
+    const pips = s.drift >= 0.999 ? 3 : s.drift >= 0.62 ? 2 : s.drift >= 0.3 ? 1 : 0;
+    this._set('feelTag', s.drifting ? `Drift ${'●'.repeat(pips)}${'○'.repeat(3 - pips)}` : s.kick > 0 ? 'Drift boost' : s.draft > 0.25 ? (s.towing ? 'Slipstream' : 'Slingshot') : '');
+    this._flag('is-drifting', !!s.drifting);
+    this._flag('is-kick', !s.drifting && s.kick > 0);
+    this._flag('is-drafting', !s.drifting && !(s.kick > 0) && s.draft > 0.25);
     this._flag('is-scraping', s.scraping);
     this._flag('is-wrongway', s.wrongWay);
     this._flag('is-finallap', s.lap === s.laps && s.laps > 1 && !s.finished);

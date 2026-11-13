@@ -7,8 +7,8 @@ import { clamp, mulberry32 } from '../core/util.js';
 
 export const AI_SKILL = {
   easy: { gain: 2.2, throttle: 0.82, fire: 0.25, spread: 0.08, missile: 0.15, react: 0.5, boost: 0.15, gates: 0.35, corner: 0.8, risk: 0.1 },
-  normal: { gain: 2.8, throttle: 0.93, fire: 0.45, spread: 0.05, missile: 0.45, react: 0.3, boost: 0.55, gates: 0.7, corner: 1, risk: 0.35 },
-  hard: { gain: 3.4, throttle: 1, fire: 0.85, spread: 0.018, missile: 0.8, react: 0.15, boost: 1, gates: 0.95, corner: 1.2, risk: 0.6 },
+  normal: { gain: 2.8, throttle: 0.93, fire: 0.45, spread: 0.05, missile: 0.45, react: 0.3, boost: 0.55, gates: 0.7, corner: 1, risk: 0.35, drift: 0.5 },
+  hard: { gain: 3.4, throttle: 1, fire: 0.85, spread: 0.018, missile: 0.8, react: 0.15, boost: 1, gates: 0.95, corner: 1.2, risk: 0.6, drift: 1 },
 };
 
 const _inv = new THREE.Quaternion(), _l = new THREE.Vector3(), _t = new THREE.Vector3(), _a = new THREE.Vector3();
@@ -144,6 +144,15 @@ export class FlightAI {
     inp.aimY = invCurve(wantPitch);
     if (_l.z > 0.2) { inp.aimX = yawErr >= 0 ? 1 : -1; } // target behind: turn hard
 
+    // --- Drift: a bend that wants the stick pinned at speed is taken sideways (brake + steer),
+    // held for at most a corner's worth, then released for the kick. Decided once per bend.
+    const pinned = Math.max(Math.abs(wantYaw), Math.abs(wantPitch)) > 0.85 && Math.abs(yawErr) + Math.abs(pitchErr) > 0.32 && _l.z < 0;
+    if (pinned && speed > sim.p.topSpeed * 0.55 && this.avoidT === 0) {
+      if (!this.driftT) this.driftGo = this.rng() < (cfg.drift || 0);
+      this.driftT = (this.driftT || 0) + dt;
+    } else this.driftT = 0;
+    const drifting = this.driftT > 0 && this.driftGo && this.driftT < 0.85;
+
     // Keep roughly level with the line's up so craft look composed.
     const upLocal = _b.copy(fr.U).applyQuaternion(_inv);
     inp.roll = clamp(Math.atan2(upLocal.x, upLocal.y) * 1.2, -1, 1) * 0.7;
@@ -158,6 +167,7 @@ export class FlightAI {
     const maxV = sim.p.topSpeed;
     inp.throttle = clamp(vOk / maxV, 0.3, 1) * cfg.throttle;
     inp.brake = speed > vOk * 1.25 + 6 ? clamp((speed - vOk) / 90, 0.15, 1) : 0;
+    if (drifting) inp.brake = 1;
     // Boost in committed bursts rather than flickering every step.
     this.boostT = (this.boostT || 0) - dt;
     if (this.boostT <= 0) { this.boostT = 0.8 + this.rng() * 0.6; this.boostRoll = this.rng() < cfg.boost; }
