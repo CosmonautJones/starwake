@@ -42,6 +42,7 @@ const HIT_STOP = 0.35, HIT_STOP_SCALE = 0.35; // solo only: a beat of slow time 
 
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _x = new THREE.Vector3(), _q = new THREE.Quaternion();
 const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2();
+const _lookQ = new THREE.Quaternion(), _lookE = new THREE.Euler(0, 0, 0, 'YXZ');
 const FWD = new THREE.Vector3(0, 0, -1);
 const FX_FULL = { streaks: 1, blur: 1, shake: 1, fov: 1 };
 const PICKUP_COLORS = { boost: '#ffb547', missile: '#ff5a6a', shield: '#5ee7ff' };
@@ -475,7 +476,11 @@ export class FlightRace {
     this.replays?.update(dt);
     this._updateRingStates();
     if (this.hitMarker > 0) this.hitMarker -= dt;
-    this.killFeed = this.killFeed.filter((k) => (k.t -= dt) > 0);
+    if (this.killFeed.length) {
+      let expired = false;
+      for (const k of this.killFeed) if ((k.t -= dt) <= 0) expired = true;
+      if (expired) this.killFeed = this.killFeed.filter((k) => k.t > 0);
+    }
     this.incoming = this.player ? this.weapons.incomingFor(this.player.id) : false;
     if (render) this._render(dt);
   }
@@ -945,7 +950,8 @@ export class FlightRace {
   _progress(e) { return e.kind === 'remote' && e.sim._remoteProgress != null ? e.sim._remoteProgress : e.sim.progress(); }
 
   _rank() {
-    const sorted = [...this.entities].sort(this.battle ? battleOrder : (a, b) => {
+    // Sorted in place (it's already nearly in order), with one comparator kept for the match.
+    const cmp = this._rankCmp || (this._rankCmp = this.battle ? battleOrder : (a, b) => {
       const fa = a.finishTime != null, fb = b.finishTime != null;
       if (fa && fb) return a.finishTime - b.finishTime;
       if (fa) return -1;
@@ -953,8 +959,9 @@ export class FlightRace {
       if (a.connected !== b.connected) return a.connected ? -1 : 1;
       return this._progress(b) - this._progress(a);
     });
-    sorted.forEach((e, i) => (e.rank = i + 1));
-    this.standings = sorted;
+    const st = this.standings;
+    st.sort(cmp);
+    for (let i = 0; i < st.length; i++) st[i].rank = i + 1;
   }
 
   _checkFinish(dt) {
@@ -1174,7 +1181,7 @@ export class FlightRace {
     const look = _q.copy(sim.quat);
     if (e === this.player && !this.autopilot) {
       const ax = this.aim.x * (reduce ? 0.04 : 0.09), ay = this.aim.y * (reduce ? 0.03 : 0.07);
-      look.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(ay, -ax, 0, 'YXZ')));
+      look.multiply(_lookQ.setFromEuler(_lookE.set(ay, -ax, 0, 'YXZ')));
     }
     if (snap || dt === 0) c.quat.copy(look);
     else c.quat.slerp(look, 1 - Math.exp(-(this.cameraMode === 'hood' ? 20 : 4.6) * dt)); // a lazy follow: the ship swings through the frame
@@ -1260,7 +1267,7 @@ export class FlightRace {
     const sim = p.sim;
     const base = {
       game: this.game, state: this.state,
-      rank: p.rank, total: this.entities.filter((e) => e.connected).length,
+      rank: p.rank, total: this._connectedCount(),
       raceTime: this.raceTime,
       speed: Math.max(0, sim.forwardSpeed), topSpeed: sim.p.topSpeed,
       boost: sim.boost, boosting: sim.boosting,
@@ -1272,13 +1279,13 @@ export class FlightRace {
       nearMiss: this.nearMissT < 1.2 ? this.nearMissT : null,
       lock: this.lock, hitMarker: this.hitMarker > 0, killFeed: this.killFeed,
       replay: this.replays?.hudState() ?? null,
-      standings: this.standings.map((e) => ({ id: e.id, name: e.name, color: e.team != null ? TEAMS[e.team].color : e.design.colors.glow, team: e.team, isPlayer: e === p, finished: e.finishTime != null, connected: e.connected, dead: e.sim.dead, kills: e.kills, deaths: e.deaths })),
+      standings: this._hudStandings(p),
     };
     if (this.battle) {
       return Object.assign(base, {
         target: this.target, timeLeft: Math.max(0, this.timeLimit - this.matchTime()),
         outside: sim.outside > 0, outsideFor: sim.outside,
-        leaderKills: Math.max(0, ...this.entities.map((e) => e.kills)),
+        leaderKills: this._leaderKills(),
         teams: this.teams ? this.teamScores() : null, myTeam: p.team,
       });
     }
@@ -1290,6 +1297,24 @@ export class FlightRace {
       streak: sim.streak, wrongWay: sim.wrongWay > 0.8 && !sim.dead, wall: sim.wall, scraping: sim.scraping > 0,
       ghostDelta: this.ghostRun?.delta(sim) ?? null,
     });
+  }
+
+  _connectedCount() { let n = 0; for (const e of this.entities) if (e.connected) n++; return n; }
+
+  _leaderKills() { let n = 0; for (const e of this.entities) if (e.kills > n) n = e.kills; return n; }
+
+  /** Standings rows for the HUD: the same row objects every frame, refreshed in place. */
+  _hudStandings(p) {
+    const rows = this._hudRows || (this._hudRows = []);
+    const st = this.standings;
+    while (rows.length < st.length) rows.push({});
+    rows.length = st.length;
+    for (let i = 0; i < st.length; i++) {
+      const e = st[i], r = rows[i];
+      r.id = e.id; r.name = e.name; r.color = e.team != null ? TEAMS[e.team].color : e.design.colors.glow; r.team = e.team;
+      r.isPlayer = e === p; r.finished = e.finishTime != null; r.connected = e.connected; r.dead = e.sim.dead; r.kills = e.kills; r.deaths = e.deaths;
+    }
+    return rows;
   }
 
   audioState() {

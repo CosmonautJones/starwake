@@ -44,7 +44,7 @@ export class Trail {
         void main(){
           float near = smoothstep(uNear, uNear * 4.0, vDepth);
           float a = pow(1.0 - vT, 2.2) * uIntensity * 0.7 * near;
-          vec3 c = mix(vec3(1.0), uColor, smoothstep(0.0, 0.08, vT)) * 1.1;
+          vec3 c = mix(vec3(1.0), uColor, smoothstep(0.0, 0.05, vT)) * 1.1;
           float edge = abs(vS);
           if (uStyle > 0.5 && uStyle < 1.5) { // comet: long white-hot core, glow at the edges
             float core = 1.0 - smoothstep(0.0, 0.55, edge);
@@ -71,6 +71,9 @@ export class Trail {
             c = mix(vec3(0.55, 0.75, 1.3), vec3(1.35, 1.0, 0.45), core) + vec3(spark) * 1.4;
             a = pow(1.0 - vT, 1.7) * uIntensity * 0.8 * near * (0.85 + spark);
           }
+          // Soft edges (a ribbon, not a bar) and a roll-off close to the lens, where one trail
+          // can cover a big slice of the screen and bloom straight to white.
+          a *= (1.0 - smoothstep(0.25, 1.0, edge)) * mix(0.4, 1.0, smoothstep(10.0, 48.0, vDepth));
           gl_FragColor = vec4(c, a);
         }`,
     });

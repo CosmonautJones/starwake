@@ -430,7 +430,7 @@ export class SpeedFX {
 
     // ---- streak intensity / length
     const spd = smooth(0.25, 1.0, speedN);
-    let a = Math.min(0.75, spd * 0.42 + this._boost * 0.2 + this._ss * 0.1) + this._nm * 0.45;
+    let a = Math.min(0.62, spd * 0.34 + this._boost * 0.2 + this._ss * 0.1) + this._nm * 0.45;   // present, but the ships and the line stay the subject
     if (rm) a *= 0.35;
     a *= this.levels.streaks > 0 ? 0.6 + 0.4 * this.levels.streaks : 0;
     this._alpha += (a - this._alpha) * k;

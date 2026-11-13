@@ -63,6 +63,7 @@ const gauge = () => {
     <path class="g-well" d="${arc(G.cx, G.cy, 134, G.a0, G.a1)}Z"/>
     <path class="g-disc" d="${arc(G.cx, G.cy, 154, G.a0, G.a1)}"/>
     <path class="g-btrack" d="${arc(G.cx, G.cy, G.rBoost, G.a0, G.a1)}" pathLength="100"/>
+    <path class="g-bglow" data-k="boostArcGlow" d="${arc(G.cx, G.cy, G.rBoost, G.a0, G.a1)}" pathLength="100"/>
     <path class="g-bfill" data-k="boostArc" d="${arc(G.cx, G.cy, G.rBoost, G.a0, G.a1)}" pathLength="100"/>
     <path class="g-bnotch" d="${arc(G.cx, G.cy, G.rBoost, G.a0, G.a1)}" pathLength="100"/>
     <path class="g-bpulse" data-k="boostPulse" d="${arc(G.cx, G.cy, G.rBoost, G.a0, G.a1)}" pathLength="100"/>
@@ -85,6 +86,8 @@ const gauge = () => {
 const brow = () => `
   <svg class="hud-brow" viewBox="0 0 600 72" aria-hidden="true">
     <path class="b-track" d="${arc(B.cx, B.cy, B.r, bA(0), bA(1))}"/>
+    <path class="b-glow" data-k="browAGlow" d="${arc(B.cx, B.cy, B.r, bA(0), bA(1))}" pathLength="100"/>
+    <path class="b-glow b-fill-r" data-k="browBGlow" d="${arc(B.cx, B.cy, B.r, bA(1), bA(0))}" pathLength="100"/>
     <path class="b-fill" data-k="browA" d="${arc(B.cx, B.cy, B.r, bA(0), bA(1))}" pathLength="100"/>
     <path class="b-fill b-fill-r" data-k="browB" d="${arc(B.cx, B.cy, B.r, bA(1), bA(0))}" pathLength="100"/>
     <g class="b-gates" data-k="browGates"></g>
@@ -93,16 +96,12 @@ const brow = () => `
 
 const vitals = () => `
   <svg class="hud-vitals" viewBox="-210 -210 420 420" aria-hidden="true">
-    <defs>
-      <path id="hv-sl" d="${arc(0, 0, V.r + 12, 180 + V.span - 2, 180 + 8)}"/>
-      <path id="hv-hl" d="${arc(0, 0, V.r + 12, -V.span + 2, -8)}"/>
-    </defs>
     <path class="v-track" d="${arc(0, 0, V.r, 180 - V.span, 180 + V.span)}"/>
     <path class="v-fill v-shield" data-k="shieldArc" d="${arc(0, 0, V.r, 180 - V.span, 180 + V.span)}" pathLength="100"/>
     <path class="v-track" d="${arc(0, 0, V.r, V.span, -V.span)}"/>
     <path class="v-fill v-hull" data-k="hullArc" d="${arc(0, 0, V.r, V.span, -V.span)}" pathLength="100"/>
-    <text class="v-label v-label-s"><textPath href="#hv-sl" startOffset="0">Shield</textPath></text>
-    <text class="v-label v-label-h" text-anchor="end"><textPath href="#hv-hl" startOffset="100%">Hull</textPath></text>
+    <text class="v-label v-label-s" x="${pt(0, 0, V.r, 180 + V.span)[0].toFixed(1)}" y="${(pt(0, 0, V.r, 180 + V.span)[1] - 13).toFixed(1)}" text-anchor="middle">Shield</text>
+    <text class="v-label v-label-h" x="${pt(0, 0, V.r, -V.span)[0].toFixed(1)}" y="${(pt(0, 0, V.r, -V.span)[1] - 13).toFixed(1)}" text-anchor="middle">Hull</text>
   </svg>`;
 
 const ribbon = (kText, cls) => `
@@ -234,9 +233,13 @@ export class Hud {
     const pct = Math.round(clamp(v, 0, 1) * 1000) / 10;
     if (this.cache[k] === pct) return;
     this.cache[k] = pct;
-    const n = this.el[k];
-    n.style.strokeDasharray = `${pct} 200`;
-    n.style.opacity = pct < 0.4 ? '0' : '';
+    const n = this.el[k], dash = `${pct} 200`, op = pct < 0.4 ? '0' : '';
+    n.style.strokeDasharray = dash;
+    n.style.opacity = op;
+    // A wider, fainter copy underneath stands in for a glow (an SVG filter here would be
+    // re-rasterised on every change, and these arcs change most frames).
+    const glow = this.el[k + 'Glow'];
+    if (glow) { glow.style.strokeDasharray = dash; glow.style.opacity = op; }
   }
 
   _flag(cls, on) {
@@ -327,7 +330,7 @@ export class Hud {
     }
     // Optional fields from newer match code: render when present.
     const hasDodge = typeof s.dodgeReady === 'boolean';
-    this.el.dodge.toggleAttribute('hidden', !hasDodge);
+    if (this.cache.hasDodge !== hasDodge) { this.cache.hasDodge = hasDodge; this.el.dodge.toggleAttribute('hidden', !hasDodge); }
     if (hasDodge) this._flag('is-dodgeready', s.dodgeReady);
     const demos = typeof s.demos === 'number' ? s.demos : 0;
     if (this.cache.demos !== demos) {
@@ -388,7 +391,8 @@ export class Hud {
     if (this.msgTimer > 0) { this.msgTimer -= dt; if (this.msgTimer <= 0) this.el.msg.classList.remove('show'); }
     if (this.centerTimer > 0) { this.centerTimer -= dt; if (this.centerTimer <= 0) this.el.center.classList.remove('pop'); }
     this.hurt = Math.max(0, this.hurt - dt * 2.2);
-    this.el.vignette.style.opacity = String(this.hurt * 0.5);
+    const vg = Math.round(this.hurt * 50) / 100;
+    if (this.cache.vignette !== vg) { this.cache.vignette = vg; this.el.vignette.style.opacity = String(vg); }
 
     this._drawOverlay(s);
     this._drawRadar();
@@ -657,6 +661,17 @@ export class Hud {
     const race = this.race;
     const W = this.radar.width, R = W / 2 - 10, cx = W / 2, cy = W / 2;
     g.clearRect(0, 0, W, W);
+    g.drawImage(this._radarFace || (this._radarFace = this._buildRadarFace(W)), 0, 0);
+    g.lineCap = 'round';
+    this._radarBlips(g, race, R, cx, cy);
+  }
+
+  /** The radar's face (disc, forward cone, range ring, bezel ticks) never changes: draw it once. */
+  _buildRadarFace(W) {
+    const c = document.createElement('canvas');
+    c.width = c.height = W;
+    const g = c.getContext('2d');
+    const R = W / 2 - 10, cx = W / 2, cy = W / 2;
     const bg = g.createRadialGradient(cx, cy, R * 0.1, cx, cy, R);
     bg.addColorStop(0, 'rgba(14,20,52,0.72)'); bg.addColorStop(1, 'rgba(6,8,26,0.72)');
     g.fillStyle = bg;
@@ -679,6 +694,10 @@ export class Hud {
       if (Math.abs(((a + Math.PI / 2) % TAU + TAU) % TAU) < 0.001) continue;
       g.beginPath(); g.moveTo(cx + Math.cos(a) * (R + 3), cy + Math.sin(a) * (R + 3)); g.lineTo(cx + Math.cos(a) * (R + (i % 6 === 0 ? 8 : 5)), cy + Math.sin(a) * (R + (i % 6 === 0 ? 8 : 5))); g.stroke();
     }
+    return c;
+  }
+
+  _radarBlips(g, race, R, cx, cy) {
     const p = race.player.sim;
     _inv.copy(p.quat).invert();
     const range = 900;

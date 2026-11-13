@@ -482,7 +482,7 @@ export function buildCraft(designIn, { lod = 'high', underglow = true } = {}) {
 
   let ugMat = null;
   if (lodKey === 'high' && underglow) {
-    ugMat = new THREE.MeshBasicMaterial({ map: glowTexture(), color: glow, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false });
+    ugMat = new THREE.MeshBasicMaterial({ map: glowTexture(), color: glow, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending, depthWrite: false }); // a pool of light, not a floodlight
     const ug = new THREE.Mesh(underglowGeo(), ugMat);
     ug.position.y = -0.7;
     ug.scale.set(4.5, 1, 7.5);

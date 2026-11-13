@@ -107,13 +107,29 @@ class App {
     this.applyQuality();
   }
 
+  /** Device pixel ratio for the current quality, capped so high-DPI screens don't melt. */
+  _pixelRatio() {
+    const q = this.settings.quality;
+    return Math.min(window.devicePixelRatio || 1, q === 'high' ? 1.75 : q === 'medium' ? 1.25 : 1);
+  }
+
   applyQuality() {
     const q = this.settings.quality;
-    const ratio = Math.min(window.devicePixelRatio || 1, q === 'high' ? 1.75 : q === 'medium' ? 1.25 : 1);
-    this.renderer.setPixelRatio(ratio);
-    if (this.composer) { this.composer.dispose?.(); this.composer = null; this.speedPass = null; }
+    document.documentElement.dataset.quality = q; // CSS drops backdrop blur on Low
+    this.renderer.setPixelRatio(this._pixelRatio());
+    if (this.composer) {
+      // EffectComposer.dispose() frees only its own two buffers: the passes (bloom's mip chain,
+      // the speed pass) have to be freed here or every quality change strands their targets.
+      for (const pass of this.composer.passes) pass.dispose?.();
+      this.composer.dispose();
+      this.composer = null; this.speedPass = null; this.bloom = null; this.renderPass = null;
+    }
     if (q !== 'low') {
-      this.composer = new EffectComposer(this.renderer);
+      // The scene is drawn into the composer's buffer, not the canvas, so the canvas's own
+      // antialiasing never touches it: multisample the buffer instead (resolved before bloom).
+      // (CSS-pixel size here: the composer scales by the pixel ratio itself, and resize() below sets the real size.)
+      const target = new THREE.WebGLRenderTarget(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight), { type: THREE.HalfFloatType, samples: q === 'high' ? 4 : 2 });
+      this.composer = new EffectComposer(this.renderer, target);
       this.renderPass = new RenderPass(new THREE.Scene(), new THREE.PerspectiveCamera());
       this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), q === 'high' ? 0.7 : 0.6, 0.5, 0.82);
       this.baseBloom = this.bloom.strength;
@@ -146,6 +162,9 @@ class App {
 
   resize() {
     const w = window.innerWidth, h = window.innerHeight;
+    // The window can move to a screen with a different pixel density (or the page can zoom).
+    const ratio = this._pixelRatio();
+    if (ratio !== this.renderer.getPixelRatio()) { this.renderer.setPixelRatio(ratio); this.composer?.setPixelRatio(ratio); }
     this.renderer.setSize(w, h, false);
     this.composer?.setSize(w, h);
     this.stage?.resize?.(w, h);
