@@ -7,6 +7,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { createSpeedPass } from './space/speedfx.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { FXAAPass } from 'three/addons/postprocessing/FXAAPass.js';
 
 import { storage } from './core/storage.js';
 import { VERSION, BUILT, versionLabel } from './version.js';
@@ -126,11 +127,10 @@ class App {
       this.composer = null; this.speedPass = null; this.bloom = null; this.renderPass = null;
     }
     if (q !== 'low') {
-      // The scene is drawn into the composer's buffer, not the canvas, so the canvas's own
-      // antialiasing never touches it: multisample the buffer instead (resolved before bloom).
-      // (CSS-pixel size here: the composer scales by the pixel ratio itself, and resize() below sets the real size.)
-      const target = new THREE.WebGLRenderTarget(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight), { type: THREE.HalfFloatType, samples: q === 'high' ? 4 : 2 });
-      this.composer = new EffectComposer(this.renderer, target);
+      // Plain (single-sample) buffers. v0.8.0 multisampled them, and on some GPUs bloom compositing
+      // into multisampled buffers flickered the whole frame. Edges are smoothed by FXAA at the end
+      // instead, after tone mapping, where it works best.
+      this.composer = new EffectComposer(this.renderer);
       this.renderPass = new RenderPass(new THREE.Scene(), new THREE.PerspectiveCamera());
       this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), q === 'high' ? 0.7 : 0.6, 0.5, 0.82);
       this.baseBloom = this.bloom.strength;
@@ -141,6 +141,7 @@ class App {
       this.composer.addPass(this.speedPass);
       this.composer.addPass(this.bloom);
       this.composer.addPass(new OutputPass());
+      this.composer.addPass(new FXAAPass());
     }
     this.resize();
   }

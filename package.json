@@ -1,6 +1,6 @@
 {
   "name": "starwake",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Starwake — arcade WebGL space racing with a craft hangar and multiplayer lobbies",
   "main": "index.js",
   "scripts": {
