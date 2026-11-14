@@ -21,7 +21,12 @@ export const DEFAULT_SETTINGS = {
   arenaId: 'driftyard', battleBots: 5, battleTeams: false, battleTarget: 10, battleTime: 300,
   netKind: 'tabs', relayUrl: '',
   ghost: true,
+  tiltSteer: false,
 };
+
+// First run on a phone or tablet: start light, so it runs well before anyone finds Settings.
+const TOUCH_FIRST_RUN = { quality: 'low', aiCount: 3 };
+const isTouch = () => { try { return typeof matchMedia === 'function' && matchMedia('(hover: none) and (pointer: coarse)').matches; } catch { return false; } };
 
 const memory = new Map();
 let available = true;
@@ -57,7 +62,10 @@ function write(key, value) {
 export const storage = {
   get persistent() { return available; },
 
-  loadSettings() { return { ...DEFAULT_SETTINGS, ...read(KEYS.settings, {}) }; },
+  loadSettings() {
+    const saved = read(KEYS.settings, null);
+    return { ...DEFAULT_SETTINGS, ...(saved ? {} : isTouch() ? TOUCH_FIRST_RUN : {}), ...(saved || {}) };
+  },
   saveSettings(s) { return write(KEYS.settings, s); },
 
   /** User designs only (presets are built in and read-only). */

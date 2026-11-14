@@ -16,6 +16,8 @@
 //   fire, missile.
 // Mouse (race mode only): cursor offset from screen centre is the aim, LMB fire, RMB
 //   missile. Optional pointer lock turns the mouse into a virtual stick.
+// Touch (racing on phones, js/ui/touch.js): a thumb stick aims, buttons for boost, drift,
+//   fire, missile and dodge; throttle is automatic. Fed in through attachTouch().
 // Gamepad: left stick aim, right stick X roll, RT throttle, LT brake, A boost, RB fire,
 //   LB/X missile, Y reset, Start pause, Back camera, B back; d-pad / stick nav edges.
 //
@@ -154,6 +156,8 @@ function unit(x, y) {
 
 export class Input {
   constructor(target = window) {
+    this._touch = null;   // TouchControls.state, when this is a touch device
+    this._lastTouch = -1e9; // ms of the last touch, to ignore the mouse events a browser fakes after it
     this.target = target;
     this._held = new Set(); // codes currently down (game keys only)
     this._tapped = new Set(); // codes pressed since last poll (so quick taps count)
@@ -260,6 +264,19 @@ export class Input {
   // Public API
 
   /** 'keyboard' | 'mouse' | 'gamepad': the device that most recently produced input. */
+  /** Touch controls register their live state here; poll() merges it like another pad. */
+  attachTouch(state) { this._touch = state; }
+
+  /** A touch just happened: the mouse events browsers synthesise after it are ignored. */
+  noteTouch() { this._lastTouch = nowMs(); this._setDevice('touch'); }
+
+  /** One-frame action from an on-screen control (pause, camera, dodge, fire, missile). */
+  pushEdge(action) { this._edges.add(action); }
+
+  _fakeMouse(e) {
+    return (e && e.sourceCapabilities && e.sourceCapabilities.firesTouchEvents) || nowMs() - this._lastTouch < 1200;
+  }
+
   get activeDevice() {
     return this._device;
   }
@@ -509,11 +526,26 @@ export class Input {
 
     if (padActive) this._setDevice('gamepad');
 
+    // --- Touch controls (merged like a pad; they own the aim while they're the device in use).
+    const tc = this._touch;
+    let touchAim = null;
+    if (tc && tc.active) {
+      if (tc.throttle > throttle) throttle = tc.throttle;
+      if (tc.brake > brake) brake = tc.brake;
+      if (tc.boost) boost = true;
+      if (tc.fire) fire = true;
+      if (tc.missile) missile = true;
+      if (this._device === 'touch') touchAim = { x: tc.aimX, y: tc.aimY };
+    }
+
     // --- Aim source. Gamepad owns the aim once used (until the mouse moves again);
     // arrow keys override the mouse while they're in use; otherwise the mouse aims.
     let aim;
     let src;
-    if (this._device === 'gamepad') {
+    if (touchAim && !kbAiming && padAimMag === 0) {
+      aim = touchAim;
+      src = 'touch';
+    } else if (this._device === 'gamepad') {
       if (kbAiming && Math.hypot(this._kbAimX, this._kbAimY) > padAimMag) {
         aim = { x: this._kbAimX, y: this._kbAimY };
         src = 'keyboard';
@@ -777,6 +809,7 @@ export class Input {
   }
 
   _onMouseMove(e) {
+    if (this._fakeMouse(e)) return;
     let dist = 0;
     if (this.pointerLocked) {
       const mx = Number(e.movementX) || 0;
@@ -812,6 +845,7 @@ export class Input {
   }
 
   _onMouseDown(e) {
+    if (this._fakeMouse(e)) return;
     if (typeof e.clientX === 'number' && !this.pointerLocked) {
       this._mx = e.clientX;
       this._my = e.clientY;

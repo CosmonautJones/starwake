@@ -1,6 +1,6 @@
 // Written by tools/stamp-version.mjs from package.json. Bump the version there, then run the tool.
-export const VERSION = '0.10.0';
-export const BUILT = '2026-11-13';
+export const VERSION = '0.11.0';
+export const BUILT = '2026-11-14';
 
 /** "v0.8.0" */
 export const versionLabel = () => `v${VERSION}`;
