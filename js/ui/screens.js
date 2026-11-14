@@ -13,6 +13,7 @@ import { mulberry32 } from '../core/util.js';
 import { HangarScreen } from './hangar.js';
 import { rankPill, courseMedal, targetsPanel, resultsPanel } from './careerView.js';
 import { versionLabel, builtLabel } from '../version.js';
+import { isTouchDevice } from './touch.js';
 
 const html = (s) => {
   const t = document.createElement('template');
@@ -191,7 +192,7 @@ export class Screens {
           <span class="chip" style="--c:${d.colors.glow}">${escapeHtml(d.name)}</span>
           <span>flown by ${escapeHtml(app.settings.playerName)}</span>
           ${storage.persistent ? '' : '<span class="warn">Saving is unavailable in this browser mode — designs last until you close the tab.</span>'}
-          ${matchMedia('(hover: none) and (pointer: coarse)').matches ? '<span class="warn">Starwake is played with a keyboard or a game controller. Connect one to race.</span>' : ''}
+          ${isTouchDevice() ? '<span class="warn">Touch controls: wormhole races play with your thumbs, sideways. Battle needs a controller for now.</span>' : ''}
           <span class="version" title="Built ${builtLabel()}">${versionLabel()}</span>
         </footer>
       </section>`);
@@ -257,7 +258,9 @@ export class Screens {
             ${opts}
             ${battle ? '' : '<div class="medal-targets" data-k="medals"></div>'}
             <p class="note" data-k="note"></p>
-            <button class="primary big" data-act="start">${battle ? 'Start battle' : 'Start race'}</button>
+            ${battle && isTouchDevice() && !app.input.gamepadConnected
+              ? '<p class="note warn-note">Battle needs a keyboard and mouse or a game controller for now. Connect a controller to play it here, or try a wormhole race with touch.</p><button class="primary big" data-act="start" disabled>Start battle</button>'
+              : `<button class="primary big" data-act="start">${battle ? 'Start battle' : 'Start race'}</button>`}
           </div>
         </div>
       </section>`);

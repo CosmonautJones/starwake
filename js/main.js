@@ -23,6 +23,7 @@ import { FlightRace } from './flight/flightRace.js';
 import { HangarStage } from './world/hangarStage.js';
 import { Hud } from './ui/hud.js';
 import { Screens } from './ui/screens.js';
+import { TouchControls, isTouchDevice } from './ui/touch.js';
 import { parseInvite } from './net/online.js';
 
 const SKIP_PAD = ['confirm', 'back', 'pause', 'fire', 'missile', 'reset', 'camera', 'dodge'];
@@ -47,6 +48,7 @@ class App {
     this.audio = new AudioEngine();
     this.input = new Input(window);
     this.input.setOptions({ sensitivity: this.settings.mouseSens, invertY: this.settings.invertY, rumble: this.settings.rumble !== false });
+    this.touch = new TouchControls(this); // phones: thumb stick + buttons (does nothing elsewhere)
     this.feel = new RaceFeel(this); // adaptive race music + rumble cues
     this.input.onAnyInput(() => { this.audio.unlock(); this.audio.music(this.race && this.race.mode !== 'attract' ? 'race' : 'menu'); });
     this.applyAudioSettings();
@@ -281,7 +283,9 @@ class App {
     }
     this.run = new RunTracker(); // career: laps, clean laps, demolitions for the results
     this.hud = new Hud(this.hudRoot, this.race);
-    this.hud.hint(this.input.activeDevice === 'gamepad'
+    this.hud.hint(isTouchDevice() && !battle && this.input.activeDevice !== 'gamepad'
+      ? 'Left thumb steers · hold Drift in a turn, let go for a kick · Boost on the right · tuck in behind a rival for a slipstream'
+      : this.input.activeDevice === 'gamepad'
       ? 'Left stick aim · RT thrust · RB fire · LB missile · A boost · Y reset'
       : battle
         ? `Mouse aims · W thrust · Left click fire · Right click missile · Space boost · ${this.race.teams ? `You're on Blue — first team to ${this.race.target} kills` : `First to ${this.race.target} kills`}`
@@ -289,6 +293,7 @@ class App {
     this.setStage(this.race);
     this.screens.show('race');
     this.input.setRaceMode(true);
+    this.touch.setRace(true, { battle });
     this.canvas.classList.add('in-race');
     this.paused = false;
     this.audio.music('race');
@@ -304,6 +309,7 @@ class App {
     this.hud = null;
     this.labelsRoot.innerHTML = '';
     this.input.setRaceMode(false);
+    this.touch.setRace(false);
     this.input.exitPointerLock();
     this.canvas.classList.remove('in-race');
     this.paused = false;
@@ -316,6 +322,7 @@ class App {
     this.race.paused = on;
     this.audio.duck(on);
     this.input.setRaceMode(!on);
+    this.touch.setRace(!on, { battle: this.race.battle });
     if (on) this.input.exitPointerLock();
     this.canvas.classList.toggle('in-race', !on);
     if (on) this.screens.overlay('pause');
@@ -447,6 +454,7 @@ class App {
     const rawDt = Math.min(0.05, frameSec);
     this.last = now;
     const dt = rawDt * this.timeScale;
+    this.touch.update();
     const input = this.input.poll();
 
     // Global UI navigation (gamepad) and back.

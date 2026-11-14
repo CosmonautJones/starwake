@@ -6,6 +6,7 @@
 // rings, lock-on) plus the radar. Race and battle share the layout; [data-game] swaps the
 // mode panels.
 
+import { isTouchDevice } from './touch.js';
 import * as THREE from 'three';
 import { formatTime, ordinal, escapeHtml, clamp } from '../core/util.js';
 
@@ -165,7 +166,7 @@ export class Hud {
         <div class="hud-replay" aria-hidden="true">
           <i class="rp-bar rp-top"></i><i class="rp-bar rp-bot"></i>
           <span class="rp-tag"><b>Replay</b><em data-k="replayLabel"></em></span>
-          <span class="rp-skip">Press any key to skip</span>
+          <span class="rp-skip">${isTouchDevice() ? 'Tap to skip' : 'Press any key to skip'}</span>
         </div>
       </div>`;
     this.el = {};

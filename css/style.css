@@ -677,3 +677,76 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
    frame over a moving WebGL canvas. On Low quality the menus drop their blur as well. */
 :root[data-quality="low"] *, :root[data-quality="low"] *::before, :root[data-quality="low"] *::after { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
 :root[data-quality="low"] .panel, :root[data-quality="low"] .track-choice { background-color: var(--glass-strong); }
+
+/* ============================================================= touch controls (js/ui/touch.js)
+   Phones and tablets, racing only. Left half steers (a stick appears under your thumb),
+   right thumb gets Boost and Drift big, Fire, Missile and Dodge smaller. */
+.touch { position: fixed; inset: 0; z-index: 20; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.touch[hidden] { display: none; }
+.t-zone { position: absolute; left: 0; top: 18%; width: 52%; bottom: 0; }
+.t-stick { position: absolute; transform: translate(-50%, -50%); border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, rgba(79, 234, 255, 0.05) 0 55%, rgba(79, 234, 255, 0.12) 56% 100%); box-shadow: inset 0 0 0 1.5px rgba(160, 190, 255, 0.34); }
+.t-stick[hidden] { display: none; }
+.t-knob { position: absolute; left: 50%; top: 50%; width: 44%; height: 44%; margin: -22% 0 0 -22%; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, rgba(238, 243, 255, 0.55), rgba(79, 234, 255, 0.28)); box-shadow: 0 0 0 1.5px rgba(238, 243, 255, 0.5); }
+.t-hint { position: absolute; left: 4%; bottom: 14%; max-width: 38%; padding: 8px 14px; border-radius: 14px; pointer-events: none;
+  font: 600 12px/1.35 var(--ui); color: var(--text); background: rgba(6, 8, 26, 0.7); box-shadow: inset 0 0 0 1px var(--edge-hi); }
+.t-hint[hidden] { display: none; }
+.t-btn { position: absolute; display: grid; place-items: center; border-radius: 50%; pointer-events: auto; touch-action: none;
+  font: 700 11px var(--ui); letter-spacing: 0.08em; text-transform: uppercase; color: rgba(238, 243, 255, 0.86);
+  background: rgba(8, 11, 32, 0.46); box-shadow: inset 0 0 0 1.5px rgba(160, 190, 255, 0.3); transition: transform 0.06s, background 0.06s; }
+.t-btn.down { transform: scale(0.93); background: rgba(79, 234, 255, 0.3); }
+/* Right-thumb cluster: an arc around the bottom-right corner, sized from the short side. */
+.t-pad { position: absolute; right: 0; bottom: 0; width: 0; height: 0; --u: clamp(46px, 13vmin, 66px); }
+.t-pad .t-btn { width: var(--u); height: var(--u); }
+.t-pad .t-big { width: calc(var(--u) * 1.42); height: calc(var(--u) * 1.42); font-size: 12px; }
+.t-boost { right: calc(18px + env(safe-area-inset-right)); bottom: 18px; color: #2a0d02; background: linear-gradient(160deg, rgba(255, 201, 74, 0.72), rgba(255, 122, 47, 0.72)); }
+.t-boost.down { background: linear-gradient(160deg, #ffd56e, #ff7a2f); }
+.t-drift { right: calc(18px + var(--u) * 1.6 + env(safe-area-inset-right)); bottom: 14px; color: #241603; background: linear-gradient(160deg, rgba(255, 217, 160, 0.66), rgba(255, 201, 74, 0.6)); }
+.t-drift.down { background: linear-gradient(160deg, #ffe3b6, #ffc94a); }
+.t-pad [data-t="fire"] { right: calc(24px + env(safe-area-inset-right)); bottom: calc(30px + var(--u) * 1.5); }
+.t-pad [data-t="missile"] { right: calc(26px + var(--u) * 1.2 + env(safe-area-inset-right)); bottom: calc(22px + var(--u) * 2.05); }
+.t-pad [data-t="dodge"] { right: calc(30px + var(--u) * 2.6 + env(safe-area-inset-right)); bottom: calc(20px + var(--u) * 1.32); }
+/* Beside the radar, clear of the position and lap readouts. */
+.t-top { position: absolute; top: calc(10px + env(safe-area-inset-top)); right: calc(clamp(80px, 21vh, 116px) + 40px + env(safe-area-inset-right)); display: flex; gap: 8px; }
+.t-top .t-btn { position: relative; width: 44px; height: 44px; border-radius: 14px; font-size: 10px; }
+.t-top .t-btn.on { color: #04202a; background: linear-gradient(160deg, #bdefff, var(--ion)); }
+/* Portrait: ask for landscape (iPhone Safari can't lock it). */
+.t-rotate { display: none; position: absolute; inset: 0; place-items: center; background: rgba(5, 7, 26, 0.92); pointer-events: auto;
+  font: 700 18px var(--ui); color: var(--text); text-align: center; padding: 24px; }
+@media (orientation: portrait) { .t-rotate { display: grid; } }
+
+/* The race HUD on a phone: smaller, and out from under the thumbs. */
+:root.touch-race .hud-radar-wrap { width: clamp(80px, 21vh, 116px); }
+:root.touch-race .hud-tl { transform: scale(0.72); transform-origin: top left; }
+:root.touch-race .hud-top { transform: translateX(-50%) scale(0.8); transform-origin: top center; }
+:root.touch-race .hud-cluster { width: clamp(150px, 42vh, 230px); }
+:root.touch-race .hud-vitals { width: clamp(220px, 62vh, 360px); }
+:root.touch-race .hud-bl, :root.touch-race .hud-hint { display: none; } /* under the steering thumb */
+
+/* Phones held sideways: short screens. Title menu in two columns, setup back to two columns
+   so Start stays in view, everything a size smaller. */
+@media (max-height: 500px) and (min-width: 560px) {
+  .screen { padding: 10px calc(16px + env(safe-area-inset-right)) 10px calc(16px + env(safe-area-inset-left)); }
+  .title-block { margin-top: 0; }
+  .wordmark { font-size: 40px; }
+  .wake { height: 14px; }
+  .tagline { display: none; }
+  .menu { display: grid; grid-template-columns: repeat(2, minmax(0, 250px)); gap: 6px 12px; margin-top: 8px; }
+  .title .menu button { margin-left: 0; min-width: 0; width: 100%; padding: 9px 24px 9px 22px; }
+  .menu button b { font-size: 17px; }
+  .title-foot { font-size: 11.5px; gap: 6px; }
+  .title-foot > span { padding: 4px 10px; }
+  .title-foot > .pilot-rank { min-width: 0; }
+  .screen-head { margin-bottom: 8px; }
+  .screen-head h1, .screen-head h2 { font-size: 22px; }
+  .setup-grid { grid-template-columns: minmax(0, 1.15fr) minmax(250px, 1fr); gap: 12px; }
+  .track-list { gap: 8px; }
+  .track-choice { padding-top: 10px; padding-bottom: 10px; }
+  .panel { padding: 12px 14px; }
+  .field { margin-bottom: 6px; }
+  .warn-note { color: var(--gold); }
+  .setup-opts { display: flex; flex-direction: column; }
+  .setup-opts .primary { order: -1; margin: 0 0 10px; }  /* Start first: the panel is taller than the screen */
+  .setup-opts .warn-note { order: -2; margin: 0 0 6px; }
+}
